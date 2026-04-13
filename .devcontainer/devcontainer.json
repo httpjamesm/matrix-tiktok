@@ -1,0 +1,16 @@
+{
+  "name": "Go",
+  "image": "mcr.microsoft.com/devcontainers/go:1.25",
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.Go"],
+      "settings": {
+        "go.toolsManagement.autoUpdate": true,
+        "go.useLanguageServer": true,
+        "go.lintTool": "staticcheck",
+      },
+    },
+  },
+  "postCreateCommand": "go version",
+  "remoteUser": "vscode",
+}
