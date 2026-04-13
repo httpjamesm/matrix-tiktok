@@ -1,0 +1,13 @@
+# TikTok-specific configuration for the matrix-tiktok bridge.
+
+# How often (in seconds) to poll TikTok for new messages.
+# Lower values increase responsiveness but may trigger rate limits.
+poll_interval_seconds: 10
+
+# Optional: override the TikTok API base URL (useful for testing or alternative endpoints).
+# Leave empty to use the default.
+api_base_url: ""
+
+# Optional: a custom User-Agent string to send with TikTok API requests.
+# Leave empty to use the default built into the TikTok PoC client.
+user_agent: ""
