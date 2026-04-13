@@ -8,7 +8,8 @@ import (
 )
 
 type Conversation struct {
-	ID           string
+	ID           string   // 0:1:X:Y
+	SourceID     string   // 5: from get_by_user_init
 	Participants []string // user IDs
 }
 
@@ -302,11 +303,19 @@ func parseConversationEntry(raw []byte) (Conversation, error) {
 	}
 
 	convID := msgGetString(entry, 1)
-	userID := strconv.FormatUint(msgGetUint(entry, 2), 10)
+	sourceID := strconv.FormatUint(msgGetUint(entry, 5), 10)
+
+	// convID format: "0:1:<userA>:<userB>" — take the last two colon-separated segments
+	parts := strings.Split(convID, ":")
+	if len(parts) < 2 {
+		return Conversation{}, fmt.Errorf("unexpected convID format: %q", convID)
+	}
+	participants := parts[len(parts)-2:]
 
 	return Conversation{
 		ID:           convID,
-		Participants: []string{userID},
+		SourceID:     sourceID,
+		Participants: participants,
 	}, nil
 }
 

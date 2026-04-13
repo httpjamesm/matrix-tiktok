@@ -51,7 +51,9 @@ func main() {
 	fmt.Printf("  Found %d conversation(s):\n\n", len(convs))
 	for i, conv := range convs {
 		fmt.Printf("  ── Conversation #%d ──\n", i+1)
+
 		fmt.Printf("    Conv ID      : %s\n", conv.ID)
+		fmt.Printf("    Source ID    : %s\n", conv.SourceID)
 		if len(conv.Participants) > 0 {
 			fmt.Printf("    Participants : %v\n", conv.Participants)
 		}
