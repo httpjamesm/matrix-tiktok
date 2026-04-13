@@ -12,12 +12,31 @@ import (
 const DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
 type Client struct {
+	// r is the client for www.tiktok.com
 	r *resty.Client
+	// rIA is the client for the IM API specifically
+	rIA *resty.Client
+}
+
+type MessagesUniversalData map[string]any
+
+func (m MessagesUniversalData) getAppContext() (map[string]any, error) {
+	defaultScope, ok := m["__DEFAULT_SCOPE__"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("__DEFAULT_SCOPE__ not found or wrong type")
+	}
+
+	appContext, ok := defaultScope["webapp.app-context"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("webapp.app-context not found or wrong type")
+	}
+
+	return appContext, nil
 }
 
 // GetMessages fetches /messages, extracts the #__UNIVERSAL_DATA_FOR_REHYDRATION__
 // script tag, and returns its contents as a parsed JSON map.
-func (c *Client) GetMessages() (map[string]any, error) {
+func (c *Client) getMessagesUniversalData() (MessagesUniversalData, error) {
 	resp, err := c.r.R().
 		SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
 		Get("/messages")
@@ -83,8 +102,16 @@ func NewClient(cookieString string) *Client {
 	r.SetHeader("User-Agent", DEFAULT_USER_AGENT)
 	r.SetHeader("Accept-Language", "en-US,en;q=0.9")
 	r.SetBaseURL("https://www.tiktok.com")
+
+	rIA := resty.New()
+	rIA.SetHeader("Cookie", cookieString)
+	rIA.SetHeader("User-Agent", DEFAULT_USER_AGENT)
+	rIA.SetHeader("Accept-Language", "en-US,en;q=0.9")
+	rIA.SetHeader("Referer", "https://www.tiktok.com/")
+	rIA.SetBaseURL("https://im-api-sg.tiktok.com")
 	return &Client{
-		r: r,
+		r:   r,
+		rIA: rIA,
 	}
 }
 

@@ -13,19 +13,14 @@ type Self struct {
 }
 
 func (c *Client) GetSelf(ctx context.Context) (*Self, error) {
-	data, err := c.GetMessages()
+	data, err := c.getMessagesUniversalData()
 	if err != nil {
 		return nil, fmt.Errorf("get universal data: %w", err)
 	}
 
-	defaultScope, ok := data["__DEFAULT_SCOPE__"].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("__DEFAULT_SCOPE__ not found or wrong type")
-	}
-
-	appContext, ok := defaultScope["webapp.app-context"].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("webapp.app-context not found or wrong type")
+	appContext, err := data.getAppContext()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get appContext: %w", err)
 	}
 
 	user, ok := appContext["user"].(map[string]any)
