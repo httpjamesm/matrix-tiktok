@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,7 +16,7 @@ import (
 // WSMessage is the unit of communication between libtiktok and the connector
 // layer. It carries everything the bridge needs to dispatch a single inbound
 // chat event without any further API calls (except for video-share URL
-// resolution which happens inside parseWSFrame itself).
+// resolution which happens inside parseMessageContent).
 type WSMessage struct {
 	Conversation Conversation
 	Message      Message
@@ -103,7 +102,6 @@ func (c *Client) deriveWSURL() (string, error) {
 //	                        [5]  message detail
 //	                               [3]  numeric message ID     (varint uint64)
 //	                               [4]  send timestamp         (varint, microseconds)
-//	                               [6]  wire message type      (varint: 7=text, 8=video)
 //	                               [7]  sender user ID         (varint uint64)
 //	                               [8]  JSON content payload   (bytes)
 //	                               [9]  repeated KV tag pairs  (bytes, repeated)
@@ -165,9 +163,7 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 
 	numericMsgID := msgGetUint(detail, 3)
 	tsUs := int64(msgGetUint(detail, 4)) // microseconds
-	wireType := msgGetUint(detail, 6)    // 7=text, 8=video share, …
 	senderID := strconv.FormatUint(msgGetUint(detail, 7), 10)
-	contentBytes := msgGetBytes(detail, 8)
 
 	// ── message ID ───────────────────────────────────────────────────────────
 	// Prefer the s:client_message_id tag (field 9, repeated KV pairs) so that
@@ -179,12 +175,7 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 	}
 
 	// ── JSON content ─────────────────────────────────────────────────────────
-	var content map[string]any
-	if len(contentBytes) > 0 {
-		_ = json.Unmarshal(contentBytes, &content) // best-effort; nil on error
-	}
-
-	msgType, text, mediaURL := wsContentToFields(ctx, c, wireType, content)
+	msgType, text, mediaURL, _ := parseMessageContent(ctx, c, msgGetBytes(detail, 8))
 
 	msg := Message{
 		ID:          msgID,
@@ -202,85 +193,6 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 		Participants: []string{senderID},
 	}
 	return &WSMessage{Conversation: conv, Message: msg}, nil
-}
-
-// extractClientMsgID walks the repeated field-9 KV tag pairs in a message
-// detail and returns the value of the "s:client_message_id" key, or "" when
-// not present.
-func extractClientMsgID(detail protoMsg) string {
-	for _, tagRaw := range msgGetAllBytes(detail, 9) {
-		tag, err := pbDecode(tagRaw)
-		if err != nil {
-			continue
-		}
-		if msgGetString(tag, 1) == "s:client_message_id" {
-			if id := msgGetString(tag, 2); id != "" {
-				return id
-			}
-		}
-	}
-	return ""
-}
-
-// wsContentToFields maps a WS frame's wire-type number and JSON content blob
-// to the (msgType, text, mediaURL) triple used by libtiktok.Message.
-//
-// WS aweType values differ from the REST API (where plain text is aweType 0):
-//
-//	700 → "text"
-//	800 → "video" (shared TikTok post)
-//
-// For video shares a GetUser call resolves the numeric uid to a username so
-// that the canonical TikTok video URL can be constructed, matching the
-// behaviour of parseMessageEntry in inbox.go.  The wireType argument is used
-// as a secondary fallback when aweType is absent from the JSON.
-func wsContentToFields(ctx context.Context, c *Client, wireType uint64, content map[string]any) (msgType, text, mediaURL string) {
-	aweType := -1
-	if content != nil {
-		if f, ok := content["aweType"].(float64); ok {
-			aweType = int(f)
-		}
-	}
-
-	switch aweType {
-	case 700:
-		msgType = "text"
-		if content != nil {
-			text, _ = content["text"].(string)
-		}
-
-	case 800:
-		msgType = "video"
-		if content != nil {
-			itemID, _ := content["itemId"].(string)
-			uid, _ := content["uid"].(string)
-			if itemID != "" && uid != "" {
-				if user, err := c.GetUser(ctx, uid); err == nil && user.UniqueID != "" {
-					mediaURL = "https://www.tiktok.com/@" + user.UniqueID + "/video/" + itemID
-				}
-			}
-			text, _ = content["content_title"].(string)
-		}
-
-	default:
-		if aweType >= 0 {
-			msgType = fmt.Sprintf("type_%d", aweType)
-		} else {
-			// aweType absent — fall back to the numeric wire type.
-			switch wireType {
-			case 7:
-				msgType = "text"
-			case 8:
-				msgType = "video"
-			default:
-				msgType = fmt.Sprintf("type_%d", wireType)
-			}
-		}
-		if content != nil {
-			text, _ = content["text"].(string)
-		}
-	}
-	return
 }
 
 // ────────────────────────────────────────────────────────────────────────────

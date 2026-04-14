@@ -199,6 +199,63 @@ func msgGetAllBytes(m protoMsg, field int) [][]byte {
 	return out
 }
 
+// extractClientMsgID walks the repeated field-9 KV tag pairs in a decoded
+// protobuf message and returns the value of the "s:client_message_id" key,
+// or "" when not present. Used by both parseMessageEntry (REST) and
+// parseWSFrame (WebSocket).
+func extractClientMsgID(m protoMsg) string {
+	for _, tagRaw := range msgGetAllBytes(m, 9) {
+		tag, err := pbDecode(tagRaw)
+		if err != nil {
+			continue
+		}
+		if msgGetString(tag, 1) == "s:client_message_id" {
+			if id := msgGetString(tag, 2); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// parseMessageContent decodes the JSON content blob (field 8 in both the REST
+// get-by-conversation response and the WebSocket push frame) and returns the
+// (msgType, text, mediaURL, mimeType) fields for a Message.
+//
+// Known aweType values:
+//
+//	0, 700 → "text"  (REST API uses 0; WebSocket push uses 700)
+//	800    → "video" (shared TikTok post)
+func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (msgType, text, mediaURL, mimeType string) {
+	if len(contentBytes) == 0 {
+		return
+	}
+	var content map[string]any
+	if err := json.Unmarshal(contentBytes, &content); err != nil {
+		return
+	}
+	aweTypeF, _ := content["aweType"].(float64)
+	switch int(aweTypeF) {
+	case 0, 700:
+		msgType = "text"
+		text, _ = content["text"].(string)
+	case 800:
+		msgType = "video"
+		if itemID, _ := content["itemId"].(string); itemID != "" {
+			if uid, _ := content["uid"].(string); uid != "" {
+				if user, err := c.GetUser(ctx, uid); err == nil && user.UniqueID != "" {
+					mediaURL = "https://www.tiktok.com/@" + user.UniqueID + "/video/" + itemID
+				}
+			}
+		}
+		text, _ = content["content_title"].(string)
+	default:
+		msgType = fmt.Sprintf("type_%d", int(aweTypeF))
+		text, _ = content["text"].(string)
+	}
+	return
+}
+
 type metaKV struct{ k, v string }
 
 func buildMetadata(deviceID, msToken, verifyFP string) []metaKV {
@@ -499,48 +556,9 @@ func parseMessageEntry(ctx context.Context, c *Client, raw []byte) (Message, uin
 	tsMicros := msgGetUint(entry, 4)
 	cursorTs := msgGetUint(entry, 25) // field 25: pagination timestamp cursor
 
-	// Extract the stable unique message ID from the repeated field-9 key-value
-	// pairs. The sending client embeds a UUID under the "s:client_message_id"
-	// key before transmitting, and the server echoes it back verbatim, making
-	// it the most reliable deduplication handle available in the response.
-	var msgID string
-	for _, kvRaw := range msgGetAllBytes(entry, 9) {
-		kv, err := pbDecode(kvRaw)
-		if err != nil {
-			continue
-		}
-		if msgGetString(kv, 1) == "s:client_message_id" {
-			msgID = msgGetString(kv, 2)
-			break
-		}
-	}
+	msgID := extractClientMsgID(entry)
 
-	var msgType, text, mediaURL, mimeType string
-	contentBytes := msgGetBytes(entry, 8)
-	if len(contentBytes) > 0 {
-		var content map[string]any
-		if jsonErr := json.Unmarshal(contentBytes, &content); jsonErr == nil {
-			aweTypeF, _ := content["aweType"].(float64)
-			switch int(aweTypeF) {
-			case 0:
-				msgType = "text"
-				text, _ = content["text"].(string)
-			case 800:
-				msgType = "video"
-				if itemID, _ := content["itemId"].(string); itemID != "" {
-					if uid, _ := content["uid"].(string); uid != "" {
-						if user, err := c.GetUser(ctx, uid); err == nil && user.UniqueID != "" {
-							mediaURL = "https://www.tiktok.com/@" + user.UniqueID + "/video/" + itemID
-						}
-					}
-				}
-				text, _ = content["content_title"].(string)
-			default:
-				msgType = fmt.Sprintf("type_%d", int(aweTypeF))
-				text, _ = content["text"].(string)
-			}
-		}
-	}
+	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, msgGetBytes(entry, 8))
 
 	return Message{
 		ID:          msgID,
