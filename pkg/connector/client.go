@@ -324,23 +324,44 @@ func (tc *TikTokClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) 
 		name = "@" + user.UniqueID
 	}
 
-	info := &bridgev2.UserInfo{
+	return &bridgev2.UserInfo{
 		Name:        &name,
 		Identifiers: []string{fmt.Sprintf("tiktok:@%s", user.UniqueID)},
+		Avatar:      tc.makeGhostAvatar(user),
+	}, nil
+}
+
+// makeGhostAvatar builds a bridgev2.Avatar from a TikTok user profile.
+// When AvatarURL is empty the returned value signals removal so that a
+// previously set avatar is cleared on the Matrix side.
+func (tc *TikTokClient) makeGhostAvatar(user *libtiktok.User) *bridgev2.Avatar {
+	if user.AvatarURL == "" {
+		return &bridgev2.Avatar{
+			ID:     "remove",
+			Remove: true,
+		}
 	}
+	avatarURL := user.AvatarURL // capture for the closure
+	return &bridgev2.Avatar{
+		ID: networkid.AvatarID(avatarURL),
+		Get: func(ctx context.Context) ([]byte, error) {
+			return tc.apiClient.DownloadAvatar(ctx, avatarURL)
+		},
+	}
+}
 
-	// TODO: proxy the avatar through Matrix once media upload is wired in, e.g.:
-	//   if user.AvatarURL != "" {
-	//       data, mime, err := downloadHTTP(ctx, user.AvatarURL)
-	//       if err == nil {
-	//           mxc, _, err := intent.UploadMedia(ctx, "", data, user.UniqueID+".jpg", mime)
-	//           if err == nil {
-	//               info.Avatar = &bridgev2.Avatar{MXC: mxc}
-	//           }
-	//       }
-	//   }
-
-	return info, nil
+// fetchGhostAvatar fetches the latest avatar for ghost from TikTok and
+// applies it via ghost.UpdateAvatar.  It returns true when the avatar was
+// actually changed, matching the convention used by other mautrix bridges.
+func (tc *TikTokClient) fetchGhostAvatar(ctx context.Context, ghost *bridgev2.Ghost) bool {
+	user, err := tc.apiClient.GetUser(ctx, string(ghost.ID))
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).
+			Str("ghost_id", string(ghost.ID)).
+			Msg("Failed to get user info for avatar update")
+		return false
+	}
+	return ghost.UpdateAvatar(ctx, tc.makeGhostAvatar(user))
 }
 
 // ────────────────────────────────────────────────────────────────────────────

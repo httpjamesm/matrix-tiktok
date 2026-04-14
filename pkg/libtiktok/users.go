@@ -73,3 +73,20 @@ func (c *Client) GetUser(ctx context.Context, userID string) (*User, error) {
 
 	return u, nil
 }
+
+// DownloadAvatar fetches the raw image bytes from an absolute avatar CDN URL.
+// TikTok CDN links are unauthenticated, but sending the same User-Agent and
+// Referer headers that the resty client already carries avoids soft-blocks.
+func (c *Client) DownloadAvatar(ctx context.Context, avatarURL string) ([]byte, error) {
+	resp, err := c.r.R().
+		SetContext(ctx).
+		SetHeader("Accept", "image/*,*/*;q=0.8").
+		Get(avatarURL)
+	if err != nil {
+		return nil, fmt.Errorf("download avatar: %w", err)
+	}
+	if resp.IsError() {
+		return nil, fmt.Errorf("avatar download returned HTTP %d", resp.StatusCode())
+	}
+	return resp.Body(), nil
+}
