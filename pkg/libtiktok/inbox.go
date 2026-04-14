@@ -2,6 +2,7 @@ package libtiktok
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,8 +26,9 @@ type Message struct {
 }
 
 const (
-	inboxURL = "/v2/message/get_by_user_init"
-	imAID    = "1988"
+	inboxURL     = "/v2/message/get_by_user_init"
+	getByConvURL = "/v1/message/get_by_conversation"
+	imAID        = "1988"
 )
 
 // ---------------------------------------------------------------------------
@@ -437,9 +439,207 @@ func (c *Client) GetInbox(ctx context.Context) ([]Conversation, error) {
 }
 
 // ---------------------------------------------------------------------------
-// GetMessages — stub (not yet implemented)
+// GetMessages
 // ---------------------------------------------------------------------------
 
-func (c *Client) GetMessages(ctx context.Context, convID string, cursor string) ([]Message, error) {
-	return nil, fmt.Errorf("GetMessages: not yet implemented")
+// buildGetByConversationPayload constructs the type-301 protobuf request body
+// for the get_by_conversation endpoint. sourceID is the uint64 from field 5 of
+// the conversation entry (Conversation.SourceID); cursorTsUs is the microsecond
+// timestamp cursor from field 25 of the last seen message (0 for the first page).
+func buildGetByConversationPayload(deviceID, msToken, verifyFP, convID, sourceID string, count int, cursorTsUs uint64) []byte {
+	sourceIDUint, _ := strconv.ParseUint(sourceID, 10, 64)
+
+	// inner payload: field 8 → 301
+	var inner301 []byte
+	inner301 = append(inner301, pbStringField(1, convID)...)        // conversation_id
+	inner301 = append(inner301, pbVarintField(2, 1)...)             // direction (1 = fetch latest)
+	inner301 = append(inner301, pbVarintField(3, sourceIDUint)...)  // sourceID — routes to correct conversation
+	inner301 = append(inner301, pbVarintField(4, 1)...)             // flag
+	inner301 = append(inner301, pbVarintField(5, cursorTsUs)...)    // cursor timestamp (µs)
+	inner301 = append(inner301, pbVarintField(6, uint64(count))...) // message count
+
+	field8Content := pbEmbedField(301, inner301)
+
+	// field 15: repeated embedded metadata key-value pairs (shared with inbox)
+	var metaBytes []byte
+	for _, kv := range buildMetadata(deviceID, msToken, verifyFP) {
+		var pair []byte
+		pair = append(pair, pbStringField(1, kv.k)...)
+		pair = append(pair, pbStringField(2, kv.v)...)
+		metaBytes = append(metaBytes, pbEmbedField(15, pair)...)
+	}
+
+	// top-level envelope — same shape as inbox but type 301
+	var msg []byte
+	msg = append(msg, pbVarintField(1, 301)...)     // message type: get_by_conversation
+	msg = append(msg, pbVarintField(2, 1)...)       // identifier
+	msg = append(msg, pbStringField(3, "1.6.0")...) // client version
+	msg = append(msg, pbEmbedField(4, nil)...)      // empty options message
+	msg = append(msg, pbVarintField(5, 3)...)       // platform flag: web_pc
+	msg = append(msg, pbVarintField(6, 0)...)
+	msg = append(msg, pbStringField(7, "")...) // git hash (not required)
+	msg = append(msg, pbEmbedField(8, field8Content)...)
+	msg = append(msg, pbStringField(11, "web")...)
+	msg = append(msg, metaBytes...)
+	msg = append(msg, pbVarintField(18, 1)...)
+	return msg
+}
+
+// parseMessageEntry decodes a single message entry from the response.
+// It returns the Message and the raw field-25 timestamp (µs) used as the
+// pagination cursor.
+func parseMessageEntry(raw []byte) (Message, uint64, error) {
+	entry, err := pbDecode(raw)
+	if err != nil {
+		return Message{}, 0, fmt.Errorf("decode message entry: %w", err)
+	}
+
+	convID := msgGetString(entry, 1)
+	senderID := strconv.FormatUint(msgGetUint(entry, 7), 10)
+	msgID := strconv.FormatUint(msgGetUint(entry, 7), 10)
+	tsMicros := msgGetUint(entry, 4)
+	cursorTs := msgGetUint(entry, 25) // field 25: pagination timestamp cursor
+
+	var msgType, text, mediaURL, mimeType string
+	contentBytes := msgGetBytes(entry, 8)
+	if len(contentBytes) > 0 {
+		var content map[string]any
+		if jsonErr := json.Unmarshal(contentBytes, &content); jsonErr == nil {
+			aweTypeF, _ := content["aweType"].(float64)
+			switch int(aweTypeF) {
+			case 0:
+				msgType = "text"
+				text, _ = content["text"].(string)
+			case 800:
+				msgType = "video"
+				if itemID, _ := content["itemId"].(string); itemID != "" {
+					mediaURL = "https://www.tiktok.com/video/" + itemID
+				}
+				text, _ = content["content_title"].(string)
+			default:
+				msgType = fmt.Sprintf("type_%d", int(aweTypeF))
+				text, _ = content["text"].(string)
+			}
+		}
+	}
+
+	return Message{
+		ID:          msgID,
+		ConvID:      convID,
+		SenderID:    senderID,
+		Type:        msgType,
+		Text:        text,
+		MediaURL:    mediaURL,
+		MimeType:    mimeType,
+		TimestampMs: int64(tsMicros) / 1000,
+	}, cursorTs, nil
+}
+
+// parseGetByConversationResponse decodes the protobuf response body.
+// Returns the list of messages and the next-page cursor (field-25 timestamp of
+// the oldest/last returned message, as a decimal string).
+func parseGetByConversationResponse(body []byte) ([]Message, string, error) {
+	top, err := pbDecode(body)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode top-level response: %w", err)
+	}
+
+	// field 6 → embedded msg → field 301 → field 1 (repeated message entries)
+	field6Raw := msgGetBytes(top, 6)
+	if field6Raw == nil {
+		return nil, "", fmt.Errorf("field 6 missing in response (status=%d)", msgGetUint(top, 1))
+	}
+
+	field6, err := pbDecode(field6Raw)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode field 6: %w", err)
+	}
+
+	field301Raw := msgGetBytes(field6, 301)
+	if field301Raw == nil {
+		return nil, "", fmt.Errorf("field 6.301 missing in response")
+	}
+
+	field301, err := pbDecode(field301Raw)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode field 6.301: %w", err)
+	}
+
+	entryRaws := msgGetAllBytes(field301, 1)
+	if len(entryRaws) == 0 {
+		return nil, "", nil
+	}
+
+	messages := make([]Message, 0, len(entryRaws))
+	var lastCursorTs uint64
+	for _, raw := range entryRaws {
+		m, cursorTs, err := parseMessageEntry(raw)
+		if err != nil {
+			continue
+		}
+		messages = append(messages, m)
+		if cursorTs != 0 {
+			lastCursorTs = cursorTs
+		}
+	}
+
+	nextCursor := ""
+	if lastCursorTs != 0 {
+		nextCursor = strconv.FormatUint(lastCursorTs, 10)
+	}
+	return messages, nextCursor, nil
+}
+
+// GetMessages fetches up to 20 messages for the given conversation.
+// Pass an empty cursor for the first page; subsequent pages use the cursor
+// string returned by the previous call (the field-25 µs timestamp of the
+// oldest message in the last batch).
+// Returns the messages and the next-page cursor (empty string when exhausted).
+func (c *Client) GetMessages(ctx context.Context, conv *Conversation, cursor string) ([]Message, string, error) {
+	cookie := c.rIA.Header.Get("Cookie")
+
+	universalData, err := c.getMessagesUniversalData()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get universal data: %w", err)
+	}
+
+	appContext, err := universalData.getAppContext()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get appContext: %w", err)
+	}
+	deviceID, ok := appContext["wid"].(string)
+	if !ok {
+		return nil, "", fmt.Errorf("failed to access wid from appContext")
+	}
+
+	msToken := extractCookie(cookie, "msToken")
+	verifyFP := extractCookie(cookie, "s_v_web_id")
+
+	var cursorTsUs uint64
+	if cursor != "" {
+		cursorTsUs, _ = strconv.ParseUint(cursor, 10, 64)
+	}
+
+	payload := buildGetByConversationPayload(deviceID, msToken, verifyFP, conv.ID, conv.SourceID, 20, cursorTsUs)
+
+	resp, err := c.rIA.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/x-protobuf").
+		SetHeader("Content-Type", "application/x-protobuf").
+		SetHeader("Cache-Control", "no-cache").
+		SetHeader("Origin", "https://www.tiktok.com").
+		SetBody(payload).
+		Post(getByConvURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("post get_by_conversation: %w", err)
+	}
+	if resp.IsError() {
+		return nil, "", fmt.Errorf("get_by_conversation API returned %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	messages, nextCursor, err := parseGetByConversationResponse(resp.Body())
+	if err != nil {
+		return nil, "", fmt.Errorf("parse get_by_conversation response: %w", err)
+	}
+	return messages, nextCursor, nil
 }
