@@ -3,14 +3,18 @@ package connector
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
+
+	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 )
 
 // TikTokClient implements bridgev2.NetworkAPI for a single logged-in TikTok session.
@@ -18,10 +22,28 @@ type TikTokClient struct {
 	connector *TikTokConnector
 	userLogin *bridgev2.UserLogin
 	meta      *UserLoginMetadata
+	apiClient *libtiktok.Client
 
-	// stopPolling cancels the background polling goroutine started in Connect.
 	stopPolling context.CancelFunc
 	isConnected bool
+
+	// In-memory state — reset on restart, but the bridge deduplicates by message ID.
+	mu         sync.Mutex
+	lastSeen   map[string]int64  // convID → highest dispatched message timestamp (ms)
+	otherUsers map[string]string // convID → other participant's TikTok user ID
+}
+
+// newTikTokClient is the canonical constructor used by both LoadUserLogin and
+// TikTokLogin.finishLogin.
+func newTikTokClient(connector *TikTokConnector, userLogin *bridgev2.UserLogin, meta *UserLoginMetadata) *TikTokClient {
+	return &TikTokClient{
+		connector:  connector,
+		userLogin:  userLogin,
+		meta:       meta,
+		apiClient:  libtiktok.NewClient(meta.Cookies),
+		lastSeen:   make(map[string]int64),
+		otherUsers: make(map[string]string),
+	}
 }
 
 // Ensure TikTokClient fully implements the required interfaces.
@@ -32,46 +54,38 @@ var _ bridgev2.IdentifierResolvingNetworkAPI = (*TikTokClient)(nil)
 // Connection lifecycle
 // ────────────────────────────────────────────────────────────────────────────
 
-// Connect is called when the bridge wants to bring the user login online.
-// For TikTok (which has no official webhook support) we start a polling loop here.
-// Any connection errors must be reported through BridgeState.Send rather than
-// returned, per the March 2025 mautrix-go API update.
+// Connect validates the TikTok session and starts the background polling loop.
+// Errors are reported via BridgeState rather than returned (mautrix-go March 2025).
 func (tc *TikTokClient) Connect(ctx context.Context) {
 	log := zerolog.Ctx(ctx)
 
-	// TODO: Wire in your PoC TikTok API client here to validate the session, e.g.:
-	//
-	//   apiClient := tiktokapi.NewClient(tc.meta.Cookies)
-	//   _, err := apiClient.GetSelf(ctx)
-	//   if err != nil {
-	//       tc.userLogin.BridgeState.Send(status.BridgeState{
-	//           StateEvent: status.StateBadCredentials,
-	//           Error:      "tiktok-auth-error",
-	//           Message:    "TikTok session is no longer valid — please log in again",
-	//           Info:        map[string]any{"go_error": err.Error()},
-	//       })
-	//       return
-	//   }
-	//   tc.apiClient = apiClient
+	if _, err := tc.apiClient.GetSelf(ctx); err != nil {
+		tc.userLogin.BridgeState.Send(status.BridgeState{
+			StateEvent: status.StateBadCredentials,
+			Error:      "tiktok-auth-error",
+			Message:    "TikTok session is no longer valid — please log in again",
+			Info:       map[string]any{"go_error": err.Error()},
+		})
+		return
+	}
 
 	log.Info().
 		Str("user_id", tc.meta.UserID).
 		Str("username", tc.meta.Username).
-		Msg("Connecting TikTok client")
+		Msg("TikTok session validated, starting poller")
 
 	tc.isConnected = true
 	tc.userLogin.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateConnected,
 	})
 
-	// Start the polling goroutine. We pass a fresh background context so that
-	// the loop is not tied to the lifetime of the Connect call's context.
+	// Fresh background context so the loop outlives the Connect call's context.
 	pollCtx, cancel := context.WithCancel(context.Background())
 	tc.stopPolling = cancel
 	go tc.pollLoop(pollCtx)
 }
 
-// Disconnect tears down the remote connection for this login.
+// Disconnect stops the polling loop.
 func (tc *TikTokClient) Disconnect() {
 	if tc.stopPolling != nil {
 		tc.stopPolling()
@@ -80,30 +94,27 @@ func (tc *TikTokClient) Disconnect() {
 	tc.isConnected = false
 }
 
-// IsLoggedIn reports whether the login is currently considered valid.
-// This must NOT do any IO — return a cached value only.
+// IsLoggedIn returns the cached connection state. Must not do IO.
 func (tc *TikTokClient) IsLoggedIn() bool {
 	return tc.isConnected
 }
 
-// LogoutRemote invalidates the remote TikTok session.
-func (tc *TikTokClient) LogoutRemote(ctx context.Context) {
-	// TODO: Call your PoC API client's logout endpoint if one exists, e.g.:
-	//   _ = tc.apiClient.Logout(ctx)
-}
+// LogoutRemote is a no-op — the unofficial TikTok API has no logout endpoint.
+func (tc *TikTokClient) LogoutRemote(_ context.Context) {}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Polling
 // ────────────────────────────────────────────────────────────────────────────
 
-// pollLoop runs in a background goroutine and periodically fetches new
-// messages from the TikTok inbox until ctx is cancelled.
 func (tc *TikTokClient) pollLoop(ctx context.Context) {
 	log := tc.userLogin.Log.With().Str("component", "tiktok-poller").Logger()
+	// Attach the logger to the context so zerolog.Ctx(ctx) works inside
+	// fetchAndDispatch and any libtiktok calls that log through it.
+	ctx = log.WithContext(ctx)
+
 	log.Info().Msg("Starting TikTok message poller")
 	defer log.Info().Msg("TikTok message poller stopped")
 
-	// TODO: Tune the poll interval. TikTok's unofficial API may impose rate limits.
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -113,65 +124,134 @@ func (tc *TikTokClient) pollLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := tc.fetchAndDispatch(ctx); err != nil {
-				log.Err(err).Msg("Error while fetching TikTok messages")
+				log.Err(err).Msg("Error fetching TikTok messages")
 			}
 		}
 	}
 }
 
-// fetchAndDispatch retrieves new messages from the TikTok inbox and queues
-// each one as a remote event for the central bridge module to process.
+// fetchAndDispatch fetches the inbox, walks each conversation for new messages,
+// and queues any it hasn't seen yet into the bridgev2 event pipeline.
+//
+// Deduplication relies on two layers:
+//  1. The in-memory lastSeen map filters within a single process lifetime.
+//  2. The bridge database deduplicates by message ID across restarts.
 func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
-	// TODO: Call your PoC API client to retrieve the inbox, e.g.:
-	//
-	//   conversations, err := tc.apiClient.GetInbox(ctx)
-	//   if err != nil {
-	//       return fmt.Errorf("get inbox: %w", err)
-	//   }
-	//   for _, conv := range conversations {
-	//       for _, msg := range conv.NewMessages {
-	//           tc.dispatchMessage(ctx, conv.ID, msg.SenderID, msg.ID,
-	//               time.Unix(msg.Timestamp, 0), msg)
-	//       }
-	//   }
+	log := zerolog.Ctx(ctx)
 
-	zerolog.Ctx(ctx).Trace().Msg("fetchAndDispatch: not yet implemented — wire in your PoC here")
+	convs, err := tc.apiClient.GetInbox(ctx)
+	if err != nil {
+		return fmt.Errorf("get inbox: %w", err)
+	}
+
+	log.Info().Int("conversations", len(convs)).Msg("Inbox fetched")
+
+	if len(convs) == 0 {
+		log.Info().Msg("Inbox is empty — no conversations to process")
+		return nil
+	}
+
+	for i := range convs {
+		conv := &convs[i]
+
+		log.Info().
+			Str("conv_id", conv.ID).
+			Strs("participants", conv.Participants).
+			Str("source_id", conv.SourceID).
+			Msg("Processing conversation")
+
+		// Identify the other participant and cache them for GetChatInfo.
+		for _, pid := range conv.Participants {
+			if pid != tc.meta.UserID {
+				tc.mu.Lock()
+				tc.otherUsers[conv.ID] = pid
+				tc.mu.Unlock()
+				log.Info().
+					Str("conv_id", conv.ID).
+					Str("other_user_id", pid).
+					Str("self_user_id", tc.meta.UserID).
+					Msg("Identified other participant")
+				break
+			}
+		}
+
+		tc.mu.Lock()
+		lastSeen := tc.lastSeen[conv.ID]
+		tc.mu.Unlock()
+
+		msgs, _, err := tc.apiClient.GetMessages(ctx, conv, "")
+		if err != nil {
+			log.Err(err).Str("conv_id", conv.ID).Msg("Error fetching messages for conversation")
+			continue
+		}
+
+		log.Info().
+			Str("conv_id", conv.ID).
+			Int("messages", len(msgs)).
+			Int64("last_seen_ms", lastSeen).
+			Msg("Fetched messages for conversation")
+
+		var dispatched int
+		for _, msg := range msgs {
+			log.Info().
+				Str("conv_id", conv.ID).
+				Str("msg_id", msg.ID).
+				Str("sender_id", msg.SenderID).
+				Str("type", msg.Type).
+				Int64("ts_ms", msg.TimestampMs).
+				Int64("last_seen_ms", lastSeen).
+				Bool("skipped", msg.TimestampMs <= lastSeen).
+				Msg("Considering message")
+
+			if msg.TimestampMs <= lastSeen {
+				continue
+			}
+			tc.dispatchMessage(conv, msg)
+			dispatched++
+
+			if msg.TimestampMs > lastSeen {
+				lastSeen = msg.TimestampMs
+			}
+		}
+
+		log.Info().
+			Str("conv_id", conv.ID).
+			Int("dispatched", dispatched).
+			Msg("Finished processing conversation")
+
+		tc.mu.Lock()
+		if lastSeen > tc.lastSeen[conv.ID] {
+			tc.lastSeen[conv.ID] = lastSeen
+		}
+		tc.mu.Unlock()
+	}
 	return nil
 }
 
-// dispatchMessage queues a single TikTok message into the bridgev2 event pipeline.
-// Once your PoC client is wired in, replace *TikTokMessage with its concrete message
-// type and update convertMessage accordingly.
-func (tc *TikTokClient) dispatchMessage(
-	_ context.Context,
-	conversationID string,
-	senderID string,
-	messageID string,
-	timestamp time.Time,
-	data *TikTokMessage,
-) {
-	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Message[*TikTokMessage]{
+// dispatchMessage queues a single TikTok message into the bridgev2 pipeline.
+func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtiktok.Message) {
+	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Message[libtiktok.Message]{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventMessage,
 			LogContext: func(c zerolog.Context) zerolog.Context {
 				return c.
-					Str("conversation_id", conversationID).
-					Str("message_id", messageID).
-					Str("sender_id", senderID)
+					Str("conversation_id", conv.ID).
+					Str("message_id", msg.ID).
+					Str("sender_id", msg.SenderID)
 			},
 			PortalKey: networkid.PortalKey{
-				ID:       makePortalID(conversationID),
+				ID:       makePortalID(conv.ID),
 				Receiver: tc.userLogin.ID,
 			},
 			CreatePortal: true,
 			Sender: bridgev2.EventSender{
-				IsFromMe: senderID == tc.meta.UserID,
-				Sender:   makeUserID(senderID),
+				IsFromMe: msg.SenderID == tc.meta.UserID,
+				Sender:   makeUserID(msg.SenderID),
 			},
-			Timestamp: timestamp,
+			Timestamp: time.UnixMilli(msg.TimestampMs),
 		},
-		ID:                 networkid.MessageID(messageID),
-		Data:               data,
+		ID:                 networkid.MessageID(msg.ID),
+		Data:               msg,
 		ConvertMessageFunc: tc.convertMessage,
 	})
 }
@@ -185,32 +265,34 @@ func (tc *TikTokClient) IsThisUser(_ context.Context, userID networkid.UserID) b
 	return makeUserID(tc.meta.UserID) == userID
 }
 
-// GetCapabilities returns the Matrix room feature-set that this login supports.
+// GetCapabilities returns the Matrix room feature-set for this login.
 func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *event.RoomFeatures {
 	return &event.RoomFeatures{
-		// TikTok DM text limit is not publicly documented; 1 000 chars is conservative.
 		MaxTextLength: 1000,
-		// TODO: add image/video/sticker upload capabilities once media bridging is done.
 	}
 }
 
 // GetChatInfo returns Matrix room metadata for a bridged TikTok conversation.
-// For 1-on-1 DMs the portal ID is the TikTok conversation ID.
-func (tc *TikTokClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	// TODO: Fetch live conversation metadata from the TikTok API, e.g.:
-	//
-	//   conv, err := tc.apiClient.GetConversation(ctx, string(portal.ID))
-	//   if err != nil {
-	//       return nil, fmt.Errorf("get conversation info: %w", err)
-	//   }
-	//   name := ptr.Ptr(conv.Title) // non-nil only for group chats
+// The other participant is read from the in-memory otherUsers cache populated
+// during fetchAndDispatch. If the conversation hasn't been seen yet (e.g. a
+// portal is being reconstructed from the database on startup), the portal ID
+// is used as a placeholder and the room will refresh on the next poll.
+func (tc *TikTokClient) GetChatInfo(_ context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	tc.mu.Lock()
+	otherUserID := tc.otherUsers[string(portal.ID)]
+	tc.mu.Unlock()
+
+	if otherUserID == "" {
+		// Fallback: use the portal ID itself. It's a conversation ID, not a user
+		// ID, but it keeps the room functional until the poller repopulates the cache.
+		otherUserID = string(portal.ID)
+	}
 
 	return &bridgev2.ChatInfo{
 		Members: &bridgev2.ChatMemberList{
 			IsFull: true,
 			Members: []bridgev2.ChatMember{
 				{
-					// The Matrix user's own side of the DM.
 					EventSender: bridgev2.EventSender{
 						IsFromMe: true,
 						Sender:   makeUserID(tc.meta.UserID),
@@ -219,9 +301,8 @@ func (tc *TikTokClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal
 					PowerLevel: ptrInt(50),
 				},
 				{
-					// The remote TikTok user represented as a ghost.
 					EventSender: bridgev2.EventSender{
-						Sender: networkid.UserID(portal.ID),
+						Sender: makeUserID(otherUserID),
 					},
 					Membership: event.MembershipJoin,
 					PowerLevel: ptrInt(50),
@@ -231,99 +312,76 @@ func (tc *TikTokClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal
 	}, nil
 }
 
-// GetUserInfo returns profile metadata for a TikTok ghost user.
+// GetUserInfo fetches live profile data for a TikTok ghost user.
 func (tc *TikTokClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	// TODO: Fetch real user info from the TikTok API, e.g.:
-	//
-	//   user, err := tc.apiClient.GetUser(ctx, string(ghost.ID))
-	//   if err != nil {
-	//       return nil, fmt.Errorf("get user info: %w", err)
-	//   }
-	//   // Re-upload the avatar to Matrix:
-	//   // avatarMXC, err := intent.UploadMedia(ctx, ...)
-	//   return &bridgev2.UserInfo{
-	//       Name:        &user.Nickname,
-	//       Avatar:      &bridgev2.Avatar{MXC: avatarMXC},
-	//       Identifiers: []string{fmt.Sprintf("tiktok:@%s", user.UniqueID)},
-	//   }, nil
+	user, err := tc.apiClient.GetUser(ctx, string(ghost.ID))
+	if err != nil {
+		return nil, fmt.Errorf("get user info for %s: %w", ghost.ID, err)
+	}
 
-	return &bridgev2.UserInfo{
-		Identifiers: []string{fmt.Sprintf("tiktok:%s", ghost.ID)},
-	}, nil
+	name := user.Nickname
+	if name == "" {
+		name = "@" + user.UniqueID
+	}
+
+	info := &bridgev2.UserInfo{
+		Name:        &name,
+		Identifiers: []string{fmt.Sprintf("tiktok:@%s", user.UniqueID)},
+	}
+
+	// TODO: proxy the avatar through Matrix once media upload is wired in, e.g.:
+	//   if user.AvatarURL != "" {
+	//       data, mime, err := downloadHTTP(ctx, user.AvatarURL)
+	//       if err == nil {
+	//           mxc, _, err := intent.UploadMedia(ctx, "", data, user.UniqueID+".jpg", mime)
+	//           if err == nil {
+	//               info.Avatar = &bridgev2.Avatar{MXC: mxc}
+	//           }
+	//       }
+	//   }
+
+	return info, nil
 }
 
 // ────────────────────────────────────────────────────────────────────────────
 // Matrix → TikTok
 // ────────────────────────────────────────────────────────────────────────────
 
-// HandleMatrixMessage is called when a Matrix user sends a message in a bridged room.
-// It forwards the message to TikTok and returns the resulting remote message ID.
+// HandleMatrixMessage forwards a Matrix message to the TikTok conversation.
 func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
-	// TODO: Forward the message via your PoC API client, e.g.:
-	//
-	//   resp, err := tc.apiClient.SendMessage(ctx, tiktokapi.SendMessageParams{
-	//       ConversationID: string(msg.Portal.ID),
-	//       Text:           msg.Content.Body,
-	//   })
-	//   if err != nil {
-	//       return nil, fmt.Errorf("send tiktok message: %w", err)
-	//   }
-	//   return &bridgev2.MatrixMessageResponse{
-	//       DB: &database.Message{
-	//           ID:       networkid.MessageID(resp.MessageID),
-	//           SenderID: makeUserID(tc.meta.UserID),
-	//       },
-	//   }, nil
+	text, err := matrixToTikTok(msg.Content)
+	if err != nil {
+		return nil, err
+	}
 
-	return nil, fmt.Errorf("HandleMatrixMessage: not yet implemented")
+	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
+		ConvID: string(msg.Portal.ID),
+		Text:   text,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("send TikTok message: %w", err)
+	}
+
+	return &bridgev2.MatrixMessageResponse{
+		DB: &database.Message{
+			ID:       networkid.MessageID(resp.MessageID),
+			SenderID: makeUserID(tc.meta.UserID),
+		},
+	}, nil
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Identifier resolution (enables `start-chat` bot command)
+// Identifier resolution
 // ────────────────────────────────────────────────────────────────────────────
 
-// ResolveIdentifier resolves a TikTok username or numeric user ID into the
-// corresponding ghost and portal objects, enabling the `resolve-identifier`
-// and `start-chat` bridge bot commands.
-func (tc *TikTokClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
-	// TODO: Validate and look up the identifier via your PoC API client, e.g.:
-	//
-	//   user, err := tc.apiClient.GetUserByUsername(ctx, strings.TrimPrefix(identifier, "@"))
-	//   if err != nil {
-	//       return nil, fmt.Errorf("could not resolve TikTok user %q: %w", identifier, err)
-	//   }
-	//   userID  := makeUserID(user.ID)
-	//   portalKey := networkid.PortalKey{
-	//       ID:       makePortalID(user.ConversationID),
-	//       Receiver: tc.userLogin.ID,
-	//   }
-	//   ghost, err := tc.userLogin.Bridge.GetGhostByID(ctx, userID)
-	//   if err != nil {
-	//       return nil, fmt.Errorf("get ghost: %w", err)
-	//   }
-	//   portal, err := tc.userLogin.Bridge.GetPortalByKey(ctx, portalKey)
-	//   if err != nil {
-	//       return nil, fmt.Errorf("get portal: %w", err)
-	//   }
-	//   ghostInfo,  _ := tc.GetUserInfo(ctx, ghost)
-	//   portalInfo, _ := tc.GetChatInfo(ctx, portal)
-	//   return &bridgev2.ResolveIdentifierResponse{
-	//       Ghost:    ghost,
-	//       UserID:   userID,
-	//       UserInfo: ghostInfo,
-	//       Chat: &bridgev2.CreateChatResponse{
-	//           Portal:     portal,
-	//           PortalKey:  portalKey,
-	//           PortalInfo: portalInfo,
-	//       },
-	//   }, nil
-
-	return nil, fmt.Errorf("ResolveIdentifier: not yet implemented")
+// ResolveIdentifier will enable the `start-chat` bot command once
+// libtiktok.GetUserByUsername is implemented.
+func (tc *TikTokClient) ResolveIdentifier(_ context.Context, identifier string, _ bool) (*bridgev2.ResolveIdentifierResponse, error) {
+	return nil, fmt.Errorf("start-chat not yet available: GetUserByUsername is not implemented (got %q)", identifier)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-// ptrInt returns a pointer to the given int value (used for PowerLevel fields).
 func ptrInt(v int) *int { return &v }

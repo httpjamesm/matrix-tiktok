@@ -2,3 +2,6 @@
 config.toml
 /libtiktok-test
 /matrix-tiktok
+*.db*
+config.yaml
+/logs/

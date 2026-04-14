@@ -6,6 +6,8 @@ import (
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+
+	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 )
 
 // Ensure TikTokLogin implements the required login process interfaces.
@@ -69,36 +71,26 @@ func (tl *TikTokLogin) SubmitUserInput(ctx context.Context, input map[string]str
 // finishLogin validates the session against the TikTok API, then persists the
 // UserLogin and returns the completion step.
 func (tl *TikTokLogin) finishLogin(ctx context.Context) (*bridgev2.LoginStep, error) {
-	// TODO: replace this stub with a real call to your TikTok PoC client.
-	// Example:
-	//   client := tiktok.NewClient(tl.cookies)
-	//   selfUser, err := client.GetSelf(ctx)
-	//   if err != nil {
-	//       return nil, fmt.Errorf("failed to validate session: %w", err)
-	//   }
+	apiClient := libtiktok.NewClient(tl.cookies)
 
-	// Stub self-user info — replace with real API response fields.
-	selfUserID := "unknown" // e.g. selfUser.UniqueID or selfUser.ID
-	selfUsername := "unknown"
-	selfDisplayName := "Unknown TikTok User"
+	self, err := apiClient.GetSelf(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate TikTok session: %w", err)
+	}
 
 	// Construct the UserLogin record.
 	ul, err := tl.User.NewLogin(ctx, &database.UserLogin{
-		ID:         makeUserLoginID(selfUserID),
-		RemoteName: selfDisplayName,
+		ID:         makeUserLoginID(self.UserID),
+		RemoteName: self.Nickname,
 		Metadata: &UserLoginMetadata{
-			UserID:   selfUserID,
-			Username: selfUsername,
+			UserID:   self.UserID,
+			Username: self.UniqueID,
 			Cookies:  tl.cookies,
 		},
 	}, &bridgev2.NewLoginParams{
 		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {
 			meta := login.Metadata.(*UserLoginMetadata)
-			login.Client = &TikTokClient{
-				connector: tl.Connector,
-				userLogin: login,
-				meta:      meta,
-			}
+			login.Client = newTikTokClient(tl.Connector, login, meta)
 			return nil
 		},
 	})
@@ -109,7 +101,7 @@ func (tl *TikTokLogin) finishLogin(ctx context.Context) (*bridgev2.LoginStep, er
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
 		StepID:       "com.github.httpjamesm.matrix_tiktok.complete",
-		Instructions: fmt.Sprintf("Successfully logged in as %s", selfUsername),
+		Instructions: fmt.Sprintf("Successfully logged in as @%s", self.UniqueID),
 		CompleteParams: &bridgev2.LoginCompleteParams{
 			UserLoginID: ul.ID,
 			UserLogin:   ul,
