@@ -1,0 +1,8 @@
+[auth]
+# Paste the full Cookie header string from an authenticated TikTok browser session.
+# To obtain it:
+#   1. Open https://www.tiktok.com in your browser and sign in.
+#   2. Open DevTools (F12) → Network tab.
+#   3. Reload the page and click any request to tiktok.com.
+#   4. Under Request Headers, copy the entire value of the "Cookie" header.
+cookie = ""
