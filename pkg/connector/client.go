@@ -24,7 +24,7 @@ type TikTokClient struct {
 	meta      *UserLoginMetadata
 	apiClient *libtiktok.Client
 
-	stopPolling context.CancelFunc
+	stopLoop    context.CancelFunc
 	isConnected bool
 
 	// In-memory state — reset on restart, but the bridge deduplicates by message ID.
@@ -54,8 +54,10 @@ var _ bridgev2.IdentifierResolvingNetworkAPI = (*TikTokClient)(nil)
 // Connection lifecycle
 // ────────────────────────────────────────────────────────────────────────────
 
-// Connect validates the TikTok session and starts the background polling loop.
-// Errors are reported via BridgeState rather than returned (mautrix-go March 2025).
+// Connect validates the TikTok session, performs a one-time REST backfill to
+// catch up on recent messages, then starts the WebSocket loop for real-time
+// delivery.  Errors are reported via BridgeState rather than returned
+// (mautrix-go March 2025 convention).
 func (tc *TikTokClient) Connect(ctx context.Context) {
 	log := zerolog.Ctx(ctx)
 
@@ -72,7 +74,15 @@ func (tc *TikTokClient) Connect(ctx context.Context) {
 	log.Info().
 		Str("user_id", tc.meta.UserID).
 		Str("username", tc.meta.Username).
-		Msg("TikTok session validated, starting poller")
+		Msg("TikTok session validated, performing initial backfill")
+
+	// One-time history backfill via REST: catches up on recent messages and
+	// populates the otherUsers cache so GetChatInfo works immediately.
+	// The WebSocket only delivers events that arrive after it connects, so
+	// this ensures nothing is missed during startup.
+	if err := tc.fetchAndDispatch(ctx); err != nil {
+		log.Warn().Err(err).Msg("Initial REST backfill failed, proceeding to WebSocket anyway")
+	}
 
 	tc.isConnected = true
 	tc.userLogin.BridgeState.Send(status.BridgeState{
@@ -80,16 +90,16 @@ func (tc *TikTokClient) Connect(ctx context.Context) {
 	})
 
 	// Fresh background context so the loop outlives the Connect call's context.
-	pollCtx, cancel := context.WithCancel(context.Background())
-	tc.stopPolling = cancel
-	go tc.pollLoop(pollCtx)
+	loopCtx, cancel := context.WithCancel(context.Background())
+	tc.stopLoop = cancel
+	go tc.wsLoop(loopCtx)
 }
 
-// Disconnect stops the polling loop.
+// Disconnect stops the WebSocket loop.
 func (tc *TikTokClient) Disconnect() {
-	if tc.stopPolling != nil {
-		tc.stopPolling()
-		tc.stopPolling = nil
+	if tc.stopLoop != nil {
+		tc.stopLoop()
+		tc.stopLoop = nil
 	}
 	tc.isConnected = false
 }
@@ -103,38 +113,72 @@ func (tc *TikTokClient) IsLoggedIn() bool {
 func (tc *TikTokClient) LogoutRemote(_ context.Context) {}
 
 // ────────────────────────────────────────────────────────────────────────────
-// Polling
+// WebSocket loop
 // ────────────────────────────────────────────────────────────────────────────
 
-func (tc *TikTokClient) pollLoop(ctx context.Context) {
-	log := tc.userLogin.Log.With().Str("component", "tiktok-poller").Logger()
-	// Attach the logger to the context so zerolog.Ctx(ctx) works inside
-	// fetchAndDispatch and any libtiktok calls that log through it.
+// wsLoop dials the TikTok IM WebSocket and dispatches incoming chat events
+// until ctx is cancelled.  On disconnect it waits with exponential back-off
+// before reconnecting so that transient server errors do not cause a tight
+// reconnect storm.
+func (tc *TikTokClient) wsLoop(ctx context.Context) {
+	log := tc.userLogin.Log.With().Str("component", "tiktok-ws").Logger()
 	ctx = log.WithContext(ctx)
 
-	log.Info().Msg("Starting TikTok message poller")
-	defer log.Info().Msg("TikTok message poller stopped")
+	log.Info().Msg("Starting TikTok IM WebSocket loop")
+	defer log.Info().Msg("TikTok IM WebSocket loop stopped")
 
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	backoff := 5 * time.Second
+	const maxBackoff = 5 * time.Minute
 
 	for {
+		ch, err := tc.apiClient.ConnectWebSocket(ctx)
+		if err != nil {
+			log.Err(err).Dur("retry_in", backoff).Msg("WebSocket dial failed, will retry")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
+		}
+		backoff = 5 * time.Second // reset after a successful dial
+
+		log.Info().Msg("WebSocket connected, listening for messages")
+
+		for wsMsg := range ch {
+			// Update the otherUsers cache so GetChatInfo can build the room
+			// membership list.  For messages from others the sender IS the
+			// other participant.  For echoes of our own messages the cache
+			// was already populated by the initial fetchAndDispatch backfill.
+			if wsMsg.Message.SenderID != tc.meta.UserID {
+				tc.mu.Lock()
+				tc.otherUsers[wsMsg.Conversation.ID] = wsMsg.Message.SenderID
+				tc.mu.Unlock()
+			}
+			tc.dispatchMessage(&wsMsg.Conversation, wsMsg.Message)
+		}
+
+		// ch was closed — the connection dropped or ctx was cancelled.
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if err := tc.fetchAndDispatch(ctx); err != nil {
-				log.Err(err).Msg("Error fetching TikTok messages")
-			}
+		default:
+			log.Warn().Dur("retry_in", backoff).Msg("WebSocket disconnected, reconnecting")
 		}
 	}
 }
 
-// fetchAndDispatch fetches the inbox, walks each conversation for new messages,
-// and queues any it hasn't seen yet into the bridgev2 event pipeline.
+// fetchAndDispatch is called once on Connect to backfill recent messages via
+// the REST API before the WebSocket takes over.  It walks each inbox
+// conversation and queues any unseen messages into the bridgev2 event pipeline,
+// also populating the otherUsers cache so GetChatInfo works immediately.
 //
 // Deduplication relies on two layers:
-//  1. The in-memory lastSeen map filters within a single process lifetime.
+//  1. The in-memory lastSeen map suppresses re-dispatches within a process lifetime.
 //  2. The bridge database deduplicates by message ID across restarts.
 func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 	log := zerolog.Ctx(ctx)
