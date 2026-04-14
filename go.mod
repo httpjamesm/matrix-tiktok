@@ -5,6 +5,7 @@ go 1.25.8
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/go-resty/resty/v2 v2.17.2
+	github.com/google/uuid v1.6.0
 	github.com/rs/zerolog v1.35.0
 	go.mau.fi/util v0.9.8-0.20260406161447-0300c476893a
 	golang.org/x/net v0.53.0

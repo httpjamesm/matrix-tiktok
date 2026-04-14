@@ -583,6 +583,11 @@ func parseGetByConversationResponse(body []byte) ([]Message, string, error) {
 		}
 	}
 
+	// Reverse so messages are in chronological order (oldest first).
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
 	nextCursor := ""
 	if lastCursorTs != 0 {
 		nextCursor = strconv.FormatUint(lastCursorTs, 10)

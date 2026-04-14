@@ -223,7 +223,7 @@ func showConversation(
 		if state.nextCursor != "" {
 			cmds = append(cmds, "[l]oad more")
 		}
-		cmds = append(cmds, "[b]ack", "[q]uit")
+		cmds = append(cmds, "[s]end", "[b]ack", "[q]uit")
 		fmt.Printf("  %s\n", strings.Join(cmds, "   "))
 
 		input := strings.ToLower(readLine(r, "  > "))
@@ -250,6 +250,32 @@ func showConversation(
 			}
 			// Prepend older messages so the slice remains chronological.
 			state.messages = append(older, state.messages...)
+			state.nextCursor = newCursor
+
+		case "s", "send":
+			fmt.Println()
+			msgText := readLine(r, "  Message (empty to cancel): ")
+			if msgText == "" {
+				continue
+			}
+			fmt.Println("  Sending…")
+			res, err := client.SendMessage(ctx, libtiktok.SendMessageParams{
+				ConvID: conv.ID,
+				Text:   msgText,
+			})
+			if err != nil {
+				fmt.Printf("  Error: %v\n", err)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			fmt.Printf("  Sent! (ID: %s)\n  Refreshing…\n", res.MessageID)
+			fresh, newCursor, err := client.GetMessages(ctx, &conv, "")
+			if err != nil {
+				fmt.Printf("  Warning: could not refresh: %v\n", err)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			state.messages = fresh
 			state.nextCursor = newCursor
 		}
 	}
