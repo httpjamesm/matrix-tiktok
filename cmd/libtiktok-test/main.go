@@ -156,6 +156,78 @@ func showInbox(r *bufio.Reader, convs []libtiktok.Conversation, selfID string) i
 	}
 }
 
+// ─── user lookup screen ──────────────────────────────────────────────────────
+
+// lookupUser prompts for a user ID, calls GetUser, and prints the result.
+// Returns true to stay in the main menu, false to quit the program.
+func lookupUser(ctx context.Context, r *bufio.Reader, client *libtiktok.Client) bool {
+	for {
+		clearScreen()
+		fmt.Println("  TikTok Messages — User Lookup")
+		hr()
+		fmt.Println()
+
+		userID := readLine(r, "  Enter user ID (empty to go back): ")
+		if userID == "" {
+			return true
+		}
+
+		fmt.Println("\n  Looking up user…")
+		user, err := client.GetUser(ctx, userID)
+		if err != nil {
+			fmt.Printf("\n  Error: %v\n", err)
+			readLine(r, "\n  Press Enter to try again… ")
+			continue
+		}
+
+		fmt.Println()
+		hr()
+		fmt.Printf("  ID:        %s\n", user.ID)
+		fmt.Printf("  UniqueID:  @%s\n", user.UniqueID)
+		fmt.Printf("  Nickname:  %s\n", user.Nickname)
+		if user.AvatarURL != "" {
+			fmt.Printf("  Avatar:    %s\n", user.AvatarURL)
+		}
+		hr()
+		fmt.Println()
+
+		input := strings.ToLower(readLine(r, "  [a]nother lookup   [b]ack to menu   [q]uit: "))
+		switch input {
+		case "q", "quit", "exit":
+			return false
+		case "b", "back":
+			return true
+		}
+		// "a" or anything else: loop for another lookup
+	}
+}
+
+// ─── main menu ───────────────────────────────────────────────────────────────
+
+// showMainMenu renders the top-level action picker and returns "inbox",
+// "lookup", "quit", or "" (unrecognised input — caller should loop).
+func showMainMenu(r *bufio.Reader) string {
+	clearScreen()
+	fmt.Println("  TikTok Messages")
+	hr()
+	fmt.Println()
+	fmt.Println("  [i]nbox")
+	fmt.Println("  [u]ser lookup")
+	fmt.Println("  [q]uit")
+	fmt.Println()
+	hr()
+
+	switch strings.ToLower(readLine(r, "  > ")) {
+	case "i", "inbox":
+		return "inbox"
+	case "u", "user", "lookup":
+		return "lookup"
+	case "q", "quit", "exit":
+		return "quit"
+	}
+	return ""
+}
+
 // ─── conversation screen ─────────────────────────────────────────────────────
 
 type convState struct {
@@ -320,18 +392,32 @@ func main() {
 	}
 	fmt.Printf("  Found %d conversation(s).\n", len(convs))
 
-	// Main navigation loop: inbox → conversation → back to inbox.
+	// Main navigation loop.
 	for {
-		idx := showInbox(reader, convs, selfID)
-		if idx == -1 {
+		switch showMainMenu(reader) {
+		case "quit":
 			fmt.Println("\n  Goodbye!")
 			return
-		}
 
-		goBack := showConversation(ctx, reader, client, convs[idx], selfID)
-		if !goBack {
-			fmt.Println("\n  Goodbye!")
-			return
+		case "lookup":
+			if !lookupUser(ctx, reader, client) {
+				fmt.Println("\n  Goodbye!")
+				return
+			}
+
+		case "inbox":
+		inboxLoop:
+			for {
+				idx := showInbox(reader, convs, selfID)
+				if idx == -1 {
+					break inboxLoop
+				}
+				if !showConversation(ctx, reader, client, convs[idx], selfID) {
+					fmt.Println("\n  Goodbye!")
+					return
+				}
+			}
 		}
+		// unrecognised input: fall through and redraw the menu
 	}
 }

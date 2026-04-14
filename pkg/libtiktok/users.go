@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 )
 
 type User struct {
@@ -41,7 +40,7 @@ func (c *Client) GetUser(ctx context.Context, userID string) (*User, error) {
 		SetContext(ctx).
 		SetQueryParams(map[string]string{
 			"aid":      "1988",
-			"user_ids": url.QueryEscape(string(idsJSON)),
+			"user_ids": string(idsJSON),
 		}).
 		Get("/tiktok/v1/im/user/profile/")
 	if err != nil {

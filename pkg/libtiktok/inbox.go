@@ -496,9 +496,24 @@ func parseMessageEntry(raw []byte) (Message, uint64, error) {
 
 	convID := msgGetString(entry, 1)
 	senderID := strconv.FormatUint(msgGetUint(entry, 7), 10)
-	msgID := strconv.FormatUint(msgGetUint(entry, 7), 10)
 	tsMicros := msgGetUint(entry, 4)
 	cursorTs := msgGetUint(entry, 25) // field 25: pagination timestamp cursor
+
+	// Extract the stable unique message ID from the repeated field-9 key-value
+	// pairs. The sending client embeds a UUID under the "s:client_message_id"
+	// key before transmitting, and the server echoes it back verbatim, making
+	// it the most reliable deduplication handle available in the response.
+	var msgID string
+	for _, kvRaw := range msgGetAllBytes(entry, 9) {
+		kv, err := pbDecode(kvRaw)
+		if err != nil {
+			continue
+		}
+		if msgGetString(kv, 1) == "s:client_message_id" {
+			msgID = msgGetString(kv, 2)
+			break
+		}
+	}
 
 	var msgType, text, mediaURL, mimeType string
 	contentBytes := msgGetBytes(entry, 8)
@@ -572,9 +587,11 @@ func parseGetByConversationResponse(body []byte) ([]Message, string, error) {
 
 	messages := make([]Message, 0, len(entryRaws))
 	var lastCursorTs uint64
-	for _, raw := range entryRaws {
+	for i, raw := range entryRaws {
 		m, cursorTs, err := parseMessageEntry(raw)
 		if err != nil {
+			// Log instead of silently dropping so parse regressions are visible.
+			fmt.Printf("libtiktok: parseMessageEntry entry %d/%d: %v\n", i+1, len(entryRaws), err)
 			continue
 		}
 		messages = append(messages, m)
