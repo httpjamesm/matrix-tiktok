@@ -488,7 +488,7 @@ func buildGetByConversationPayload(deviceID, msToken, verifyFP, convID, sourceID
 // parseMessageEntry decodes a single message entry from the response.
 // It returns the Message and the raw field-25 timestamp (µs) used as the
 // pagination cursor.
-func parseMessageEntry(raw []byte) (Message, uint64, error) {
+func parseMessageEntry(ctx context.Context, c *Client, raw []byte) (Message, uint64, error) {
 	entry, err := pbDecode(raw)
 	if err != nil {
 		return Message{}, 0, fmt.Errorf("decode message entry: %w", err)
@@ -528,7 +528,11 @@ func parseMessageEntry(raw []byte) (Message, uint64, error) {
 			case 800:
 				msgType = "video"
 				if itemID, _ := content["itemId"].(string); itemID != "" {
-					mediaURL = "https://www.tiktok.com/video/" + itemID
+					if uid, _ := content["uid"].(string); uid != "" {
+						if user, err := c.GetUser(ctx, uid); err == nil && user.UniqueID != "" {
+							mediaURL = "https://www.tiktok.com/@" + user.UniqueID + "/video/" + itemID
+						}
+					}
 				}
 				text, _ = content["content_title"].(string)
 			default:
@@ -553,7 +557,7 @@ func parseMessageEntry(raw []byte) (Message, uint64, error) {
 // parseGetByConversationResponse decodes the protobuf response body.
 // Returns the list of messages and the next-page cursor (field-25 timestamp of
 // the oldest/last returned message, as a decimal string).
-func parseGetByConversationResponse(body []byte) ([]Message, string, error) {
+func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte) ([]Message, string, error) {
 	top, err := pbDecode(body)
 	if err != nil {
 		return nil, "", fmt.Errorf("decode top-level response: %w", err)
@@ -588,7 +592,7 @@ func parseGetByConversationResponse(body []byte) ([]Message, string, error) {
 	messages := make([]Message, 0, len(entryRaws))
 	var lastCursorTs uint64
 	for i, raw := range entryRaws {
-		m, cursorTs, err := parseMessageEntry(raw)
+		m, cursorTs, err := parseMessageEntry(ctx, c, raw)
 		if err != nil {
 			// Log instead of silently dropping so parse regressions are visible.
 			fmt.Printf("libtiktok: parseMessageEntry entry %d/%d: %v\n", i+1, len(entryRaws), err)
@@ -659,7 +663,7 @@ func (c *Client) GetMessages(ctx context.Context, conv *Conversation, cursor str
 		return nil, "", fmt.Errorf("get_by_conversation API returned %d: %s", resp.StatusCode(), resp.String())
 	}
 
-	messages, nextCursor, err := parseGetByConversationResponse(resp.Body())
+	messages, nextCursor, err := parseGetByConversationResponse(ctx, c, resp.Body())
 	if err != nil {
 		return nil, "", fmt.Errorf("parse get_by_conversation response: %w", err)
 	}
