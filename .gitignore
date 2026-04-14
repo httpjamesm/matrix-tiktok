@@ -5,3 +5,4 @@ config.toml
 *.db*
 config.yaml
 /logs/
+*.mp4

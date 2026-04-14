@@ -3,7 +3,9 @@ package connector
 import (
 	"context"
 	"fmt"
+	"io"
 
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 
@@ -24,7 +26,7 @@ func (tc *TikTokClient) convertMessage(
 	case "text":
 		return convertTextMessage(msg), nil
 	case "video":
-		return convertVideoMessage(ctx, intent, msg)
+		return tc.convertVideoMessage(ctx, portal, intent, msg)
 	default:
 		// Any other aweType (images, stickers, likes, etc.) falls back to a
 		// notice so the user knows something arrived even if we can't render it.
@@ -47,14 +49,97 @@ func convertTextMessage(msg libtiktok.Message) *bridgev2.ConvertedMessage {
 	}
 }
 
-// convertVideoMessage converts a TikTok video share message.
-// TikTok video shares carry a tiktok.com/video/<id> URL in msg.MediaURL and a
-// caption in msg.Text. We render them as an m.text with the URL + caption, since
-// downloading and re-uploading TikTok videos requires additional auth work.
+// convertVideoMessage downloads a shared TikTok video and uploads it to Matrix
+// as an m.video event, alongside an m.text part containing the original URL.
+// If the download or upload fails for any reason, it falls back to a plain-text
+// message with the URL so the user can still open it manually.
 //
-// TODO: download from msg.MediaURL, re-upload via intent.UploadMedia, and switch
-// to event.MsgVideo with proper URL/info fields once auth is sorted.
-func convertVideoMessage(_ context.Context, _ bridgev2.MatrixAPI, msg libtiktok.Message) (*bridgev2.ConvertedMessage, error) {
+// Download path:
+//  1. GET the TikTok video page URL (msg.MediaURL).
+//  2. Capture the Set-Cookie headers from that response.
+//  3. Parse the embedded __DEFAULT_SCOPE__ JSON to extract:
+//     __DEFAULT_SCOPE__["webapp.video-detail"].itemInfo.itemStruct.video.playAddr
+//  4. GET the play address using the captured cookies.
+//  5. Stream the resulting bytes to Matrix via intent.UploadMediaStream.
+func (tc *TikTokClient) convertVideoMessage(
+	ctx context.Context,
+	portal *bridgev2.Portal,
+	intent bridgev2.MatrixAPI,
+	msg libtiktok.Message,
+) (*bridgev2.ConvertedMessage, error) {
+	log := zerolog.Ctx(ctx)
+
+	data, mime, err := tc.apiClient.DownloadVideo(ctx, msg.MediaURL)
+	if err != nil {
+		log.Warn().Err(err).Str("url", msg.MediaURL).
+			Msg("Failed to download TikTok video; falling back to text")
+		return convertVideoFallback(msg), nil
+	}
+
+	// Pick a sensible filename and Matrix message type from the MIME type.
+	msgType, fileName := msgTypeAndName(mime)
+
+	size := int64(len(data))
+	content := &event.MessageEventContent{
+		MsgType: msgType,
+		Body:    fileName,
+		Info: &event.FileInfo{
+			MimeType: mime,
+			Size:     int(size),
+		},
+	}
+
+	mxcURL, encFile, err := intent.UploadMediaStream(
+		ctx,
+		portal.MXID,
+		size,
+		false, // requireFile — an in-memory buffer is fine
+		func(dest io.Writer) (*bridgev2.FileStreamResult, error) {
+			if _, err := dest.Write(data); err != nil {
+				return nil, err
+			}
+			return &bridgev2.FileStreamResult{
+				FileName: fileName,
+				MimeType: mime,
+			}, nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("upload media to Matrix: %w", err)
+	}
+
+	// content.URL holds the unencrypted MXC URI; content.File is populated
+	// instead when the room is encrypted (bridgev2 handles the distinction).
+	content.URL = mxcURL
+	content.File = encFile
+
+	linkBody := msg.MediaURL
+	if msg.Text != "" {
+		linkBody = msg.Text + "\n" + msg.MediaURL
+	}
+
+	return &bridgev2.ConvertedMessage{
+		Parts: []*bridgev2.ConvertedMessagePart{
+			{
+				Type:    event.EventMessage,
+				Content: content,
+			},
+			{
+				Type: event.EventMessage,
+				Content: &event.MessageEventContent{
+					MsgType:       event.MsgText,
+					Body:          linkBody,
+					Format:        event.FormatHTML,
+					FormattedBody: fmt.Sprintf(`<a href="%s">%s</a>`, msg.MediaURL, linkBody),
+				},
+			},
+		},
+	}, nil
+}
+
+// convertVideoFallback renders a TikTok video share as a plain-text message
+// containing the URL when media download is unavailable.
+func convertVideoFallback(msg libtiktok.Message) *bridgev2.ConvertedMessage {
 	body := msg.MediaURL
 	if msg.Text != "" {
 		body = msg.Text + "\n" + msg.MediaURL
@@ -75,7 +160,7 @@ func convertVideoMessage(_ context.Context, _ bridgev2.MatrixAPI, msg libtiktok.
 				},
 			},
 		},
-	}, nil
+	}
 }
 
 // convertUnknownMessage produces a fallback m.notice for message types that
@@ -110,5 +195,19 @@ func matrixToTikTok(content *event.MessageEventContent) (string, error) {
 		return "* " + content.Body, nil
 	default:
 		return "", fmt.Errorf("unsupported Matrix message type for TikTok: %s", content.MsgType)
+	}
+}
+
+// msgTypeAndName returns the Matrix message type and a default filename for a
+// given MIME type. We always download video.playAddr so the result is MsgVideo
+// in practice; the MIME type from the server is used only to pick the extension.
+func msgTypeAndName(mime string) (event.MessageType, string) {
+	switch mime {
+	case "video/webm":
+		return event.MsgVideo, "video.webm"
+	case "video/quicktime":
+		return event.MsgVideo, "video.mov"
+	default:
+		return event.MsgVideo, "video.mp4"
 	}
 }

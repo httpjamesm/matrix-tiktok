@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -205,7 +206,7 @@ func lookupUser(ctx context.Context, r *bufio.Reader, client *libtiktok.Client) 
 // ─── main menu ───────────────────────────────────────────────────────────────
 
 // showMainMenu renders the top-level action picker and returns "inbox",
-// "lookup", "quit", or "" (unrecognised input — caller should loop).
+// "lookup", "download", "quit", or "" (unrecognised input — caller should loop).
 func showMainMenu(r *bufio.Reader) string {
 	clearScreen()
 	fmt.Println("  TikTok Messages")
@@ -213,6 +214,7 @@ func showMainMenu(r *bufio.Reader) string {
 	fmt.Println()
 	fmt.Println("  [i]nbox")
 	fmt.Println("  [u]ser lookup")
+	fmt.Println("  [d]ownload video")
 	fmt.Println("  [q]uit")
 	fmt.Println()
 	hr()
@@ -222,10 +224,142 @@ func showMainMenu(r *bufio.Reader) string {
 		return "inbox"
 	case "u", "user", "lookup":
 		return "lookup"
+	case "d", "download":
+		return "download"
 	case "q", "quit", "exit":
 		return "quit"
 	}
 	return ""
+}
+
+// ─── download video screen ───────────────────────────────────────────────────
+
+// downloadVideo prompts for a TikTok video URL, calls DownloadVideo, writes
+// the result to disk, and prints verbose debug info at every step so that JSON
+// extraction failures can be diagnosed quickly.
+// Returns true to stay in the main menu, false to quit the program.
+func downloadVideo(ctx context.Context, r *bufio.Reader, client *libtiktok.Client) bool {
+	for {
+		clearScreen()
+		fmt.Println("  TikTok Messages — Download Video")
+		hr()
+		fmt.Println()
+
+		videoURL := readLine(r, "  Enter TikTok video URL (empty to go back): ")
+		if videoURL == "" {
+			return true
+		}
+
+		fmt.Println()
+		fmt.Println("  ── Step 1: downloading video…")
+		data, mime, err := client.DownloadVideo(ctx, videoURL)
+		if err != nil {
+			fmt.Printf("\n  ✗ DownloadVideo failed: %v\n", err)
+			fmt.Println()
+			fmt.Println("  ── Verbose scope dump for diagnosis ──────────────")
+			scope, scopeErr := client.FetchVideoScope(ctx, videoURL)
+			if scopeErr != nil {
+				fmt.Printf("  ✗ FetchVideoScope failed: %v\n", scopeErr)
+			} else {
+				dumpVideoScope(scope)
+			}
+			readLine(r, "\n  Press Enter to try another URL… ")
+			continue
+		}
+
+		fmt.Printf("  ✓ Downloaded %d bytes  MIME: %s\n", len(data), mime)
+
+		outPath := "video_debug.mp4"
+		if strings.HasPrefix(mime, "audio/") {
+			outPath = "video_debug_audio.mp3"
+		}
+		if writeErr := os.WriteFile(outPath, data, 0o644); writeErr != nil {
+			fmt.Printf("  ✗ Could not write %s: %v\n", outPath, writeErr)
+		} else {
+			fmt.Printf("  ✓ Saved to %s\n", outPath)
+		}
+
+		input := strings.ToLower(readLine(r, "\n  [a]nother URL   [b]ack to menu   [q]uit: "))
+		switch input {
+		case "q", "quit", "exit":
+			return false
+		case "b", "back":
+			return true
+		}
+		// "a" or anything else: loop for another URL
+	}
+}
+
+// dumpVideoScope walks the expected JSON path step by step and prints what is
+// present (✓) or missing (✗) at each level, along with the sibling keys so
+// the caller can see what TikTok actually returned.
+func dumpVideoScope(scope map[string]any) {
+	check := func(m map[string]any, key string) (map[string]any, bool) {
+		v, ok := m[key]
+		if !ok {
+			return nil, false
+		}
+		sub, ok := v.(map[string]any)
+		return sub, ok
+	}
+
+	printKeys := func(label string, m map[string]any) {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Printf("    %s keys: %s\n", label, strings.Join(keys, ", "))
+	}
+
+	fmt.Println()
+
+	defaultScope, ok := check(scope, "__DEFAULT_SCOPE__")
+	if !ok {
+		fmt.Println("  ✗ __DEFAULT_SCOPE__ — not found or not an object")
+		return
+	}
+	fmt.Println("  ✓ __DEFAULT_SCOPE__")
+	printKeys("", defaultScope)
+
+	videoDetail, ok := check(defaultScope, "webapp.video-detail")
+	if !ok {
+		fmt.Println("  ✗ webapp.video-detail — not found or not an object")
+		return
+	}
+	fmt.Println("  ✓ webapp.video-detail")
+	printKeys("", videoDetail)
+
+	itemInfo, ok := check(videoDetail, "itemInfo")
+	if !ok {
+		fmt.Println("  ✗ itemInfo — not found or not an object")
+		return
+	}
+	fmt.Println("  ✓ itemInfo")
+	printKeys("", itemInfo)
+
+	itemStruct, ok := check(itemInfo, "itemStruct")
+	if !ok {
+		fmt.Println("  ✗ itemStruct — not found or not an object")
+		return
+	}
+	fmt.Println("  ✓ itemStruct")
+	printKeys("", itemStruct)
+
+	video, ok := check(itemStruct, "video")
+	if !ok {
+		fmt.Println("  ✗ video — not found or not an object")
+		return
+	}
+	fmt.Println("  ✓ video")
+	printKeys("", video)
+
+	playAddr, ok := video["playAddr"].(string)
+	if !ok || playAddr == "" {
+		fmt.Printf("  ✗ playAddr — raw value: %#v\n", video["playAddr"])
+		return
+	}
+	fmt.Printf("  ✓ playAddr: %s\n", playAddr)
 }
 
 // ─── conversation screen ─────────────────────────────────────────────────────
@@ -401,6 +535,12 @@ func main() {
 
 		case "lookup":
 			if !lookupUser(ctx, reader, client) {
+				fmt.Println("\n  Goodbye!")
+				return
+			}
+
+		case "download":
+			if !downloadVideo(ctx, reader, client) {
 				fmt.Println("\n  Goodbye!")
 				return
 			}
