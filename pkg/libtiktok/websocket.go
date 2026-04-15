@@ -384,11 +384,31 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 	msgID := extractClientMsgIDFromTags(detail.GetTags())
 	wsContent := detail.GetContentJson()
 	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, wsContent)
+	thumbURL := ""
+	decryptKey := ""
+	mediaWidth := 0
+	mediaHeight := 0
+	if imageURL, imageThumbURL, imageDecryptKey, width, height, ok := parsePrivateImageFromWebsocketDetailProto(detail); ok {
+		msgType = "image"
+		mediaURL = imageURL
+		thumbURL = imageThumbURL
+		decryptKey = imageDecryptKey
+		mimeType = ""
+		mediaWidth = width
+		mediaHeight = height
+		if text == "" {
+			text = "[photo]"
+		}
+	}
 	if stickerURL, stickerText, stickerMIME, ok := parseStickerFromWebsocketDetailProto(detail); ok {
 		msgType = "sticker"
 		text = stickerText
 		mediaURL = stickerURL
+		thumbURL = ""
+		decryptKey = ""
 		mimeType = stickerMIME
+		mediaWidth = 0
+		mediaHeight = 0
 	}
 	replyTo := uint64(0)
 	replyQuoted := ""
@@ -416,7 +436,11 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 		Type:            msgType,
 		Text:            text,
 		MediaURL:        mediaURL,
+		ThumbnailURL:    thumbURL,
+		MediaDecryptKey: decryptKey,
 		MimeType:        mimeType,
+		MediaWidth:      mediaWidth,
+		MediaHeight:     mediaHeight,
 		TimestampMs:     tsUs / 1000,
 		ReplyToServerID: replyTo,
 		ReplyQuotedText: replyQuoted,

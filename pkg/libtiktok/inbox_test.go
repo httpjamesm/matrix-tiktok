@@ -100,6 +100,106 @@ func TestParseStickerFromWebsocketDetailProto(t *testing.T) {
 	}
 }
 
+func TestParseMessageEntry_privateImageOuterFields(t *testing.T) {
+	ctx := context.Background()
+	fullURL := "https://p0-tiktok-dm-private-sg.tiktok.com/tos-alisg-i-9aa6gs5p9y-sg/blob~tplv-9aa6gs5p9y-get:default.image?sig=full"
+	thumbURL := "https://p0-tiktok-dm-private-sg.tiktok.com/tos-alisg-i-9aa6gs5p9y-sg/blob~tplv-9aa6gs5p9y-get:thumb.image?sig=thumb"
+	decryptKey := "d1fa73054e2e8df4caebb81821d4ff39279419f0e2469df10acece30bcf6c69b"
+	entry := &tiktokpb.ConversationMessageEntry{
+		ConversationId:  protoString("0:1:1111111111111111111:2222222222222222222"),
+		ServerMessageId: protoUint64(7629097176463443476),
+		TimestampUs:     protoUint64(1776287609366353),
+		SenderUserId:    protoUint64(7583401074457215263),
+		ContentJson:     []byte(`{"hack":"1"}`),
+		MessageSubtype:  protoString("private_image"),
+		PrivateImage: &tiktokpb.PrivateImageAttachment{
+			Path:       protoString("tos-alisg-i-9aa6gs5p9y-sg/blob"),
+			DecryptKey: protoString(decryptKey),
+			Variants: []*tiktokpb.PrivateImageVariant{
+				{
+					Label:  []byte("view"),
+					Url:    []string{thumbURL, thumbURL},
+					Width:  protoUint64(808),
+					Height: protoUint64(1796),
+				},
+				{
+					Label:  []byte("full"),
+					Url:    []string{fullURL, fullURL},
+					Width:  protoUint64(808),
+					Height: protoUint64(1796),
+				},
+			},
+		},
+	}
+
+	msg, _, err := parseMessageEntry(ctx, nil, entry)
+	if err != nil {
+		t.Fatalf("parseMessageEntry returned error: %v", err)
+	}
+	if msg.Type != "image" {
+		t.Fatalf("msg.Type = %q, want image", msg.Type)
+	}
+	if msg.Text != "[photo]" {
+		t.Fatalf("msg.Text = %q, want [photo]", msg.Text)
+	}
+	if msg.MediaURL != fullURL {
+		t.Fatalf("msg.MediaURL = %q, want %q", msg.MediaURL, fullURL)
+	}
+	if msg.ThumbnailURL != thumbURL {
+		t.Fatalf("msg.ThumbnailURL = %q, want %q", msg.ThumbnailURL, thumbURL)
+	}
+	if msg.MediaDecryptKey != decryptKey {
+		t.Fatalf("msg.MediaDecryptKey = %q, want %q", msg.MediaDecryptKey, decryptKey)
+	}
+	if msg.MediaWidth != 808 || msg.MediaHeight != 1796 {
+		t.Fatalf("dimensions = %dx%d, want 808x1796", msg.MediaWidth, msg.MediaHeight)
+	}
+}
+
+func TestParsePrivateImageFromWebsocketDetailProto(t *testing.T) {
+	fullURL := "https://p0-tiktok-dm-private-sg.tiktok.com/tos-alisg-i-9aa6gs5p9y-sg/blob~tplv-9aa6gs5p9y-get:default.image?sig=full"
+	thumbURL := "https://p0-tiktok-dm-private-sg.tiktok.com/tos-alisg-i-9aa6gs5p9y-sg/blob~tplv-9aa6gs5p9y-get:thumb.image?sig=thumb"
+	decryptKey := "d1fa73054e2e8df4caebb81821d4ff39279419f0e2469df10acece30bcf6c69b"
+	detail := &tiktokpb.WebsocketMessageDetail{
+		ContentJson:    []byte(`{"hack":"1"}`),
+		MessageSubtype: protoString("private_image"),
+		PrivateImage: &tiktokpb.PrivateImageAttachment{
+			DecryptKey: protoString(decryptKey),
+			Variants: []*tiktokpb.PrivateImageVariant{
+				{
+					Label:  []byte{0x76, 0x69, 0x65, 0x77},
+					Url:    []string{thumbURL},
+					Width:  protoUint64(808),
+					Height: protoUint64(1796),
+				},
+				{
+					Label:  []byte("full"),
+					Url:    []string{fullURL},
+					Width:  protoUint64(808),
+					Height: protoUint64(1796),
+				},
+			},
+		},
+	}
+
+	mediaURL, thumb, key, width, height, ok := parsePrivateImageFromWebsocketDetailProto(detail)
+	if !ok {
+		t.Fatal("parsePrivateImageFromWebsocketDetailProto returned ok=false")
+	}
+	if mediaURL != fullURL {
+		t.Fatalf("mediaURL = %q, want %q", mediaURL, fullURL)
+	}
+	if thumb != thumbURL {
+		t.Fatalf("thumb = %q, want %q", thumb, thumbURL)
+	}
+	if key != decryptKey {
+		t.Fatalf("key = %q, want %q", key, decryptKey)
+	}
+	if width != 808 || height != 1796 {
+		t.Fatalf("dimensions = %dx%d, want 808x1796", width, height)
+	}
+}
+
 func TestParseMessageEntry_replyMetadata(t *testing.T) {
 	ctx := context.Background()
 	parentID := uint64(8000000000000000001)

@@ -2,6 +2,9 @@ package libtiktok
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -88,6 +91,31 @@ func (c *Client) DownloadSticker(ctx context.Context, stickerURL string) ([]byte
 	}
 
 	return resp.Body(), normalizeContentType(resp.Header().Get("Content-Type"), guessStickerMIMEFromURL(stickerURL)), nil
+}
+
+// DownloadPrivateImage fetches an authenticated private-image CDN URL using the
+// logged-in TikTok browser session, decrypts the returned blob with AES-256-GCM,
+// and returns the plaintext image bytes plus a detected image MIME type.
+func (c *Client) DownloadPrivateImage(ctx context.Context, imageURL, decryptKey string) ([]byte, string, error) {
+	resp, err := c.r.R().
+		SetContext(ctx).
+		SetHeader("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8").
+		SetHeader("Origin", "https://www.tiktok.com").
+		SetHeader("Referer", "https://www.tiktok.com/messages?lang=en").
+		Get(imageURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("download private image %s: %w", imageURL, err)
+	}
+	if resp.IsError() {
+		return nil, "", fmt.Errorf("private image URL %s returned HTTP %d", imageURL, resp.StatusCode())
+	}
+
+	plaintext, err := decryptTikTokPrivateImageBlob(decryptKey, resp.Body())
+	if err != nil {
+		return nil, "", fmt.Errorf("decrypt private image %s: %w", imageURL, err)
+	}
+
+	return plaintext, detectImageMIME(plaintext), nil
 }
 
 // extractVideoPlayAddr navigates the parsed __DEFAULT_SCOPE__ map returned by
@@ -203,4 +231,47 @@ func normalizeContentType(contentType, fallback string) string {
 		return fallback
 	}
 	return contentType
+}
+
+func decryptTikTokPrivateImageBlob(hexKey string, blob []byte) ([]byte, error) {
+	if len(blob) < 12+16 {
+		return nil, fmt.Errorf("blob too short for AES-GCM: got %d bytes", len(blob))
+	}
+
+	key, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return nil, fmt.Errorf("decode decrypt_key hex: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("decrypt_key must decode to 32 bytes, got %d", len(key))
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("create AES cipher: %w", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("create AES-GCM: %w", err)
+	}
+
+	nonce := blob[:12]
+	ctTag := blob[12:]
+	plaintext, err := aead.Open(nil, nonce, ctTag, nil)
+	if err != nil {
+		return nil, fmt.Errorf("AES-GCM authentication failed: %w", err)
+	}
+	return plaintext, nil
+}
+
+func detectImageMIME(data []byte) string {
+	if len(data) == 0 {
+		return "image/jpeg"
+	}
+
+	mime := http.DetectContentType(data)
+	if mime == "application/octet-stream" {
+		return "image/jpeg"
+	}
+	return mime
 }

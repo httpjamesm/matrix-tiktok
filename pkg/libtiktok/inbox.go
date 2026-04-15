@@ -25,7 +25,13 @@ type Message struct {
 	Type            string // "text", "image", "video", "sticker"
 	Text            string
 	MediaURL        string
+	ThumbnailURL    string
+	// MediaDecryptKey is currently used by private_image messages, whose CDN
+	// blobs are encrypted with AES-256-GCM.
+	MediaDecryptKey string
 	MimeType        string
+	MediaWidth      int
+	MediaHeight     int
 	TimestampMs     int64
 	Reactions       []Reaction
 	// ReplyToServerID is the parent message's server_message_id when this DM is a reply (aweType 703).
@@ -397,11 +403,31 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 	msgID := extractClientMsgIDFromTags(entry.GetTags())
 	contentJSON := entry.GetContentJson()
 	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, contentJSON)
+	thumbURL := ""
+	decryptKey := ""
+	mediaWidth := 0
+	mediaHeight := 0
+	if imageURL, imageThumbURL, imageDecryptKey, width, height, ok := parsePrivateImageFromConversationEntryProto(entry); ok {
+		msgType = "image"
+		mediaURL = imageURL
+		thumbURL = imageThumbURL
+		decryptKey = imageDecryptKey
+		mimeType = ""
+		mediaWidth = width
+		mediaHeight = height
+		if text == "" {
+			text = "[photo]"
+		}
+	}
 	if stickerURL, stickerText, stickerMIME, ok := parseStickerFromConversationEntryProto(entry); ok {
 		msgType = "sticker"
 		text = stickerText
 		mediaURL = stickerURL
+		thumbURL = ""
+		decryptKey = ""
 		mimeType = stickerMIME
+		mediaWidth = 0
+		mediaHeight = 0
 	}
 	replyTo := uint64(0)
 	replyQuoted := ""
@@ -419,7 +445,11 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 		Type:            msgType,
 		Text:            text,
 		MediaURL:        mediaURL,
+		ThumbnailURL:    thumbURL,
+		MediaDecryptKey: decryptKey,
 		MimeType:        mimeType,
+		MediaWidth:      mediaWidth,
+		MediaHeight:     mediaHeight,
 		TimestampMs:     int64(tsMicros) / 1000,
 		Reactions:       parseReactionsProto(entry.GetReactions()),
 		ReplyToServerID: replyTo,

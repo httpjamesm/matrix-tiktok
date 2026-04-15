@@ -41,15 +41,97 @@ func (tc *TikTokClient) convertMessage(
 	switch msg.Type {
 	case "text":
 		return tc.convertTextMessage(ctx, portal, msg), nil
+	case "image":
+		return tc.convertImageMessage(ctx, portal, intent, msg)
 	case "sticker":
 		return tc.convertStickerMessage(ctx, portal, intent, msg)
 	case "video":
 		return tc.convertVideoMessage(ctx, portal, intent, msg)
 	default:
-		// Any other aweType (images, stickers, likes, etc.) falls back to a
+		// Any other unsupported type falls back to a
 		// notice so the user knows something arrived even if we can't render it.
 		return convertUnknownMessage(msg), nil
 	}
+}
+
+// convertImageMessage downloads a TikTok DM private image, decrypts it via the
+// libtiktok client, and uploads it to Matrix as an m.image event.
+func (tc *TikTokClient) convertImageMessage(
+	ctx context.Context,
+	portal *bridgev2.Portal,
+	intent bridgev2.MatrixAPI,
+	msg libtiktok.Message,
+) (*bridgev2.ConvertedMessage, error) {
+	log := zerolog.Ctx(ctx)
+
+	if msg.MediaURL == "" || msg.MediaDecryptKey == "" {
+		return convertImageFallback(msg), nil
+	}
+
+	data, mime, err := tc.apiClient.DownloadPrivateImage(ctx, msg.MediaURL, msg.MediaDecryptKey)
+	if err != nil && msg.ThumbnailURL != "" && msg.ThumbnailURL != msg.MediaURL {
+		log.Warn().Err(err).
+			Str("url", msg.MediaURL).
+			Str("thumbnail_url", msg.ThumbnailURL).
+			Msg("Failed to download full TikTok private image; trying thumbnail")
+		data, mime, err = tc.apiClient.DownloadPrivateImage(ctx, msg.ThumbnailURL, msg.MediaDecryptKey)
+	}
+	if err != nil {
+		log.Warn().Err(err).
+			Str("url", msg.MediaURL).
+			Str("thumbnail_url", msg.ThumbnailURL).
+			Msg("Failed to download TikTok private image; falling back to text")
+		return convertImageFallback(msg), nil
+	}
+
+	fileName := imageFileName(mime)
+	size := int64(len(data))
+	content := &event.MessageEventContent{
+		MsgType: event.MsgImage,
+		Body:    fileName,
+		Info: &event.FileInfo{
+			MimeType: mime,
+			Size:     int(size),
+		},
+	}
+	if msg.MediaWidth > 0 {
+		content.Info.Width = msg.MediaWidth
+	}
+	if msg.MediaHeight > 0 {
+		content.Info.Height = msg.MediaHeight
+	}
+
+	mxcURL, encFile, err := intent.UploadMediaStream(
+		ctx,
+		portal.MXID,
+		size,
+		false,
+		func(dest io.Writer) (*bridgev2.FileStreamResult, error) {
+			if _, err := dest.Write(data); err != nil {
+				return nil, err
+			}
+			return &bridgev2.FileStreamResult{
+				FileName: fileName,
+				MimeType: mime,
+			}, nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("upload image to Matrix: %w", err)
+	}
+
+	content.URL = mxcURL
+	content.File = encFile
+
+	return &bridgev2.ConvertedMessage{
+		Parts: []*bridgev2.ConvertedMessagePart{
+			{
+				Type:       event.EventMessage,
+				Content:    content,
+				DBMetadata: messageMetaFromLib(msg),
+			},
+		},
+	}, nil
 }
 
 // convertStickerMessage downloads a TikTok DM sticker from the signed CDN URL
@@ -341,6 +423,29 @@ func convertStickerFallback(msg libtiktok.Message) *bridgev2.ConvertedMessage {
 	}
 }
 
+// convertImageFallback renders a private image as a plain-text notice when the
+// encrypted CDN payload could not be fetched or decrypted.
+func convertImageFallback(msg libtiktok.Message) *bridgev2.ConvertedMessage {
+	body := msg.Text
+	if body == "" {
+		body = "[photo]"
+	}
+
+	meta := messageMetaFromLib(msg)
+	return &bridgev2.ConvertedMessage{
+		Parts: []*bridgev2.ConvertedMessagePart{
+			{
+				Type: event.EventMessage,
+				Content: &event.MessageEventContent{
+					MsgType: event.MsgNotice,
+					Body:    body,
+				},
+				DBMetadata: meta,
+			},
+		},
+	}
+}
+
 // convertUnknownMessage produces a fallback m.notice for message types that
 // libtiktok does not yet decode (images, stickers, likes, reactions, etc.).
 func convertUnknownMessage(msg libtiktok.Message) *bridgev2.ConvertedMessage {
@@ -403,5 +508,20 @@ func stickerFileName(mime string) string {
 		return "sticker.jpg"
 	default:
 		return "sticker.webp"
+	}
+}
+
+func imageFileName(mime string) string {
+	switch mime {
+	case "image/png":
+		return "image.png"
+	case "image/gif":
+		return "image.gif"
+	case "image/webp":
+		return "image.webp"
+	case "image/jpeg":
+		return "image.jpg"
+	default:
+		return "image.bin"
 	}
 }

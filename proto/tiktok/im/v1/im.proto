@@ -231,6 +231,32 @@ message MessageAttachmentPayload {
   optional StickerMessagePayload sticker = 7;
 }
 
+// One downloadable variant of a private DM image attachment.
+//
+// Field 1 is polymorphic in current captures: some rows carry the ASCII label
+// "full", while others carry a small embedded message for the preview/thumb
+// slot. We keep it as raw bytes to preserve both shapes without overcommitting
+// to semantics we haven't fully verified yet.
+message PrivateImageVariant {
+  optional bytes label = 1;
+  repeated string url = 2;
+  optional uint64 width = 20;
+  optional uint64 height = 21;
+  optional uint64 reserved_23 = 23;
+}
+
+// Field 24 on chat message rows when message_subtype = "private_image".
+//
+// decrypt_key is the 32-byte AES-256-GCM key rendered as a hex string in
+// current captures. The signed CDN URLs in variants point to encrypted blobs:
+// nonce (12 bytes) || ciphertext || tag (16 bytes).
+message PrivateImageAttachment {
+  optional string path = 1;
+  optional uint64 reserved_2 = 2;
+  optional string decrypt_key = 3;
+  repeated PrivateImageVariant variants = 20;
+}
+
 // Minimal subset of a conversation message entry currently used by the bridge.
 message ConversationMessageEntry {
   optional string conversation_id = 1;
@@ -254,8 +280,10 @@ message ConversationMessageEntry {
   optional MessageReplyReference message_reply = 18;
   // Outer attachment payload; field 7 currently carries sticker metadata.
   optional MessageAttachmentPayload attachment = 20;
-  // Observed as "sticker" for sticker messages.
+  // Observed as "sticker" and "private_image" in current captures.
   optional string message_subtype = 21;
+  // Private DM image metadata (encrypted CDN URLs + decrypt key).
+  optional PrivateImageAttachment private_image = 24;
   // Pagination cursor carried on the entry; callers use the last one returned.
   optional uint64 cursor_ts_us = 25;
 }
@@ -567,8 +595,10 @@ message WebsocketMessageDetail {
   optional MessageReplyReference message_reply = 18;
   // Outer attachment payload; field 7 currently carries sticker metadata.
   optional MessageAttachmentPayload attachment = 20;
-  // Observed as "sticker" for sticker messages.
+  // Observed as "sticker" and "private_image" in current captures.
   optional string message_subtype = 21;
+  // Private DM image metadata (encrypted CDN URLs + decrypt key).
+  optional PrivateImageAttachment private_image = 24;
   optional uint64 cursor_ts_us = 25;
 }
 
