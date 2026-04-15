@@ -2,6 +2,20 @@
 
 A Matrix bridge for TikTok Messages. Intended for usage with Beeper.
 
+## Features
+
+- [ ] Messages
+  - [x] Text
+  - [ ] Images
+  - [ ] Stickers
+  - [ ] Voice Notes
+  - [x] TikToks
+- [ ] Read receipts
+- [x] Reactions
+- [x] Replies
+- [ ] Group chats
+- [x] Message deletion
+
 ## Running
 
 ### 1. Install `bbctl`
