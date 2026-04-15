@@ -3,18 +3,20 @@ module github.com/httpjamesm/matrix-tiktok
 go 1.25.8
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/coder/websocket v1.8.14
 	github.com/go-resty/resty/v2 v2.17.2
+	github.com/google/uuid v1.6.0
 	github.com/rs/zerolog v1.35.0
 	go.mau.fi/util v0.9.8-0.20260406161447-0300c476893a
+	golang.org/x/net v0.53.0
+	google.golang.org/protobuf v1.36.11
 	maunium.net/go/mautrix v0.26.5-0.20260413182302-f3fab8d38470
 )
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/lib/pq v1.12.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -30,11 +32,9 @@ require (
 	go.mau.fi/zeroconfig v0.2.0 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
-	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	maunium.net/go/mauflag v1.0.0 // indirect
