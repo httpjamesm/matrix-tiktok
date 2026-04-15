@@ -232,8 +232,7 @@ func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, c
 // → field 1 (message ID string). A second probe at field 8 → 100 → 1 is tried
 // as a fallback.
 //
-// Returns an error when no ID can be located; the caller falls back to the
-// client-generated UUID in that case.
+// Returns an error when no server-assigned ID can be located.
 func parseSendResponse(body []byte) (string, error) {
 	if len(body) == 0 {
 		return "", fmt.Errorf("empty response body")
@@ -480,8 +479,7 @@ func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
 //  4. Construct the type-100 protobuf request body.
 //  5. POST to /v1/message/send with ztca-dpop in the query string and all
 //     ticket-guard headers set.
-//  6. Parse the response for a server-assigned message ID; fall back to the
-//     client-generated UUID if the response structure is opaque.
+//  6. Parse the response for the server-assigned message ID (required).
 func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMessageResponse, error) {
 	cookie := c.rIA.Header.Get("Cookie")
 
@@ -553,9 +551,7 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 
 	msgID, err := parseSendResponse(resp.Body())
 	if err != nil {
-		// The server response format isn't fully documented; fall back to the
-		// client-generated ID so the caller always receives a non-empty value.
-		msgID = clientMsgID
+		return nil, fmt.Errorf("parse send response: %w", err)
 	}
 
 	return &SendMessageResponse{MessageID: msgID}, nil
