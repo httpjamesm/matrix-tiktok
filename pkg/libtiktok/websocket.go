@@ -193,6 +193,7 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 		Text:            text,
 		MediaURL:        mediaURL,
 		TimestampMs:     tsUs / 1000, // µs → ms
+		// Reactions:       parseReactions(detail), reactions come from another ws event
 	}
 	conv := Conversation{
 		ID: convID,

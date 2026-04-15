@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -272,7 +273,8 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 	return nil
 }
 
-// dispatchMessage queues a single TikTok message into the bridgev2 pipeline.
+// dispatchMessage queues a single TikTok message into the bridgev2 pipeline,
+// followed immediately by a ReactionSync event when the message carries reactions.
 func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtiktok.Message) {
 	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Message[libtiktok.Message]{
 		EventMeta: simplevent.EventMeta{
@@ -294,9 +296,71 @@ func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtik
 			},
 			Timestamp: time.UnixMilli(msg.TimestampMs),
 		},
-		ID:                 networkid.MessageID(msg.ServerID),
+		ID:                 networkid.MessageID(strconv.FormatUint(msg.ServerID, 10)),
 		Data:               msg,
 		ConvertMessageFunc: tc.convertMessage,
+	})
+	tc.dispatchReactions(conv, msg)
+}
+
+// dispatchReactions queues a ReactionSync event for all reactions on a message.
+//
+// QueueRemoteEvent processes events FIFO per portal, so queuing this immediately
+// after the parent message guarantees the bridge has already stored the message
+// by the time handleRemoteReactionSync looks it up by ID.
+//
+// The wire gives us reactions indexed as emoji → []userID, but ReactionSyncData
+// wants the inverse: userID → []BackfillReaction. We pivot here.
+func (tc *TikTokClient) dispatchReactions(conv *libtiktok.Conversation, msg libtiktok.Message) {
+	if len(msg.Reactions) == 0 {
+		return
+	}
+
+	// Pivot: emoji → []userID  →  userID → []BackfillReaction
+	users := make(map[networkid.UserID]*bridgev2.ReactionSyncUser, len(msg.Reactions))
+	for _, r := range msg.Reactions {
+		emojiID := networkid.EmojiID(r.Emoji)
+		for _, uid := range r.UserIDs {
+			userID := makeUserID(uid)
+			if users[userID] == nil {
+				users[userID] = &bridgev2.ReactionSyncUser{HasAllReactions: true}
+			}
+			users[userID].Reactions = append(users[userID].Reactions, &bridgev2.BackfillReaction{
+				Sender: bridgev2.EventSender{
+					IsFromMe: uid == tc.meta.UserID,
+					Sender:   userID,
+				},
+				EmojiID: emojiID,
+				Emoji:   r.Emoji,
+			})
+		}
+	}
+
+	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.ReactionSync{
+		EventMeta: simplevent.EventMeta{
+			Type: bridgev2.RemoteEventReactionSync,
+			LogContext: func(c zerolog.Context) zerolog.Context {
+				return c.
+					Str("conversation_id", conv.ID).
+					Uint64("message_id", msg.ServerID).
+					Int("reaction_count", len(msg.Reactions))
+			},
+			PortalKey: networkid.PortalKey{
+				ID:       makePortalID(conv.ID),
+				Receiver: tc.userLogin.ID,
+			},
+			Sender: bridgev2.EventSender{
+				IsFromMe: true,
+				Sender:   makeUserID(tc.meta.UserID),
+			},
+			Timestamp:   time.UnixMilli(msg.TimestampMs),
+			StreamOrder: 1, // must sort after the parent message at the same timestamp
+		},
+		TargetMessage: networkid.MessageID(strconv.FormatUint(msg.ServerID, 10)),
+		Reactions: &bridgev2.ReactionSyncData{
+			Users:       users,
+			HasAllUsers: true,
+		},
 	})
 }
 

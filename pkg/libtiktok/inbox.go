@@ -26,6 +26,15 @@ type Message struct {
 	MediaURL        string
 	MimeType        string
 	TimestampMs     int64
+	Reactions       []Reaction
+}
+
+// Reaction represents a single emoji reaction on a message and the users who sent it.
+// The Emoji field holds the raw emoji string (or text alias) after the "e:" prefix is stripped.
+// For example, field-1 value "e:❤️" becomes Emoji "❤️", and "e:love" becomes Emoji "love".
+type Reaction struct {
+	Emoji   string   // emoji character(s) or text name, e.g. "❤️" or "love"
+	UserIDs []string // IDs of users who reacted with this emoji
 }
 
 const (
@@ -210,6 +219,111 @@ func msgGetAllBytes(m protoMsg, field int) [][]byte {
 // protobuf message and returns the value of the "s:client_message_id" key,
 // or "" when not present. Used by both parseMessageEntry (REST) and
 // parseWSFrame (WebSocket).
+// parseReactions extracts all field-15 reaction entries from a decoded protobuf message.
+//
+// Wire layout of each field-15 embedded message:
+//
+//	1: "e:<emoji>"   – reaction key; we strip the "e:" prefix to get the emoji
+//	2: {             – user container
+//	     1: {        – repeated per-user entry
+//	          1: <userID uint64>
+//	          4: "<userID string>"   ← preferred; same value as field 1
+//	          3: <unix timestamp seconds>
+//	          6: <timestamp microseconds>
+//	     }
+//	   }
+func parseReactions(m protoMsg) []Reaction {
+	rawEntries := msgGetAllBytes(m, 15)
+	if len(rawEntries) == 0 {
+		return nil
+	}
+	out := make([]Reaction, 0, len(rawEntries))
+	for _, raw := range rawEntries {
+		rm, err := pbDecode(raw)
+		if err != nil {
+			continue
+		}
+		key := msgGetString(rm, 1) // e.g. "e:❤️" or "e:love"
+		emoji := strings.TrimPrefix(key, "e:")
+		if emoji == "" {
+			continue
+		}
+
+		var userIDs []string
+		if usersContainerRaw := msgGetBytes(rm, 2); usersContainerRaw != nil {
+			if uc, err := pbDecode(usersContainerRaw); err == nil {
+				for _, ue := range msgGetAllBytes(uc, 1) {
+					um, err := pbDecode(ue)
+					if err != nil {
+						continue
+					}
+					// field 4 carries the user ID as a decimal string; fall back to
+					// field 1 (uint64) when field 4 is absent.
+					if uid := msgGetString(um, 4); uid != "" {
+						userIDs = append(userIDs, uid)
+					} else if uid := msgGetUint(um, 1); uid != 0 {
+						userIDs = append(userIDs, strconv.FormatUint(uid, 10))
+					}
+				}
+			}
+		}
+
+		out = append(out, Reaction{Emoji: emoji, UserIDs: userIDs})
+	}
+	return deduplicateReactions(out)
+}
+
+// deduplicateReactions collapses reaction entries that share an identical set
+// of reacting users, keeping the entry whose Emoji contains non-ASCII runes
+// (i.e. an actual unicode emoji glyph) over a plain-text alias.
+//
+// TikTok encodes each reaction twice on the wire – once as the emoji
+// character(s) (e.g. "❤️") and once as a text alias (e.g. "love").
+// Because both entries carry exactly the same UserIDs, grouping by that
+// fingerprint reliably collapses the duplicates without needing an
+// alias-to-emoji lookup table.
+func deduplicateReactions(in []Reaction) []Reaction {
+	if len(in) <= 1 {
+		return in
+	}
+
+	isUnicode := func(s string) bool {
+		for _, r := range s {
+			if r > 0x7F {
+				return true
+			}
+		}
+		return false
+	}
+	fingerprint := func(r Reaction) string {
+		return strings.Join(r.UserIDs, "\x00")
+	}
+
+	type slot struct {
+		idx     int
+		isEmoji bool
+	}
+	seen := make(map[string]slot, len(in))
+	out := make([]Reaction, 0, len(in))
+
+	for _, r := range in {
+		key := fingerprint(r)
+		emoji := isUnicode(r.Emoji)
+		if s, ok := seen[key]; ok {
+			// Replace the stored entry only when the incoming one is a real
+			// unicode emoji and the stored one is a plain-text alias.
+			if emoji && !s.isEmoji {
+				out[s.idx] = r
+				seen[key] = slot{idx: s.idx, isEmoji: true}
+			}
+		} else {
+			seen[key] = slot{idx: len(out), isEmoji: emoji}
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func extractClientMsgID(m protoMsg) string {
 	for _, tagRaw := range msgGetAllBytes(m, 9) {
 		tag, err := pbDecode(tagRaw)
@@ -582,6 +696,7 @@ func parseMessageEntry(ctx context.Context, c *Client, raw []byte) (Message, uin
 		MediaURL:        mediaURL,
 		MimeType:        mimeType,
 		TimestampMs:     int64(tsMicros) / 1000,
+		Reactions:       parseReactions(entry),
 	}, cursorTs, nil
 }
 
