@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
 )
 
 const (
@@ -183,65 +184,38 @@ func buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64 string) []metaK
 //	       field 8  client message UUID
 //	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
 func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string) []byte {
-	// Encode the message text in the JSON envelope TikTok expects.
 	textJSON, _ := json.Marshal(map[string]any{"aweType": 0, "text": text})
 
-	// Field 5 (first occurrence): s:mentioned_users → empty sub-message value.
-	mentionedUsersKV := func() []byte {
-		var p []byte
-		p = append(p, pbStringField(1, "s:mentioned_users")...)
-		p = append(p, pbEmbedField(2, nil)...)
-		return p
-	}()
-
-	// Field 5 (second occurrence, repeated): s:client_message_id → UUID string.
-	clientMsgIDKV := func() []byte {
-		var p []byte
-		p = append(p, pbStringField(1, "s:client_message_id")...)
-		p = append(p, pbStringField(2, clientMsgID)...)
-		return p
-	}()
-
-	// Inner chat message (lives at field 8 → field 100 in the outer envelope).
-	var inner []byte
-	inner = append(inner, pbStringField(1, convID)...)
-	inner = append(inner, pbVarintField(2, 1)...)
-	inner = append(inner, pbVarintField(3, 0)...)
-	inner = append(inner, pbBytesField(4, textJSON)...)
-	inner = append(inner, pbEmbedField(5, mentionedUsersKV)...) // first occurrence
-	inner = append(inner, pbEmbedField(5, clientMsgIDKV)...)    // second occurrence (repeated)
-	inner = append(inner, pbVarintField(6, 7)...)
-	inner = append(inner, pbStringField(7, "deprecated")...)
-	inner = append(inner, pbStringField(8, clientMsgID)...)
-
-	// Field 8 outer wrapper: { 100: inner }.
-	field8Content := pbEmbedField(100, inner)
-
-	// Field 15: repeated embedded metadata key-value pairs.
-	var metaBytes []byte
-	for _, kv := range buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64) {
-		var pair []byte
-		pair = append(pair, pbStringField(1, kv.k)...)
-		pair = append(pair, pbStringField(2, kv.v)...)
-		metaBytes = append(metaBytes, pbEmbedField(15, pair)...)
+	msg := &tiktokpb.SendRequest{
+		MessageType:    protoUint64(100),
+		SubCommand:     protoUint64(10007),
+		ClientVersion:  protoString("1.6.0"),
+		Options:        emptyProtoMessage(),
+		PlatformFlag:   protoUint64(3),
+		Reserved_6:     protoUint64(0),
+		GitHash:        protoString(""),
+		DeviceId:       protoString(deviceID),
+		ClientPlatform: protoString("web"),
+		Metadata:       metadataKVsToProto(buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64)),
+		FinalFlag:      protoUint64(1),
+		Payload: &tiktokpb.SendRequestPayload{
+			Send: &tiktokpb.SendMessageBody{
+				ConversationId:  protoString(convID),
+				MessageKind:     protoUint64(1),
+				Reserved_3:      protoUint64(0),
+				ContentJson:     textJSON,
+				Reserved_6:      protoUint64(7),
+				Deprecated:      protoString("deprecated"),
+				ClientMessageId: protoString(clientMsgID),
+				Tags: []*tiktokpb.MetadataTag{
+					{Key: protoString("s:mentioned_users"), Value: nil},
+					{Key: protoString("s:client_message_id"), Value: []byte(clientMsgID)},
+				},
+			},
+		},
 	}
 
-	// Top-level envelope — same wire shape as inbox/get_by_conversation but with
-	// message type 100 and sub-command 10007.
-	var msg []byte
-	msg = append(msg, pbVarintField(1, 100)...)     // message type: send
-	msg = append(msg, pbVarintField(2, 10007)...)   // sub-command
-	msg = append(msg, pbStringField(3, "1.6.0")...) // client version
-	msg = append(msg, pbEmbedField(4, nil)...)      // empty options message
-	msg = append(msg, pbVarintField(5, 3)...)       // platform flag: web_pc
-	msg = append(msg, pbVarintField(6, 0)...)
-	msg = append(msg, pbStringField(7, "")...)
-	msg = append(msg, pbEmbedField(8, field8Content)...)
-	msg = append(msg, pbStringField(9, deviceID)...)
-	msg = append(msg, pbStringField(11, "web")...)
-	msg = append(msg, metaBytes...)
-	msg = append(msg, pbVarintField(18, 1)...)
-	return msg
+	return mustMarshalProto(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -262,35 +236,17 @@ func parseSendResponse(body []byte) (string, error) {
 	if len(body) == 0 {
 		return "", fmt.Errorf("empty response body")
 	}
-	top, err := pbDecode(body)
-	if err != nil {
+
+	var resp tiktokpb.SendResponse
+	if err := unmarshalProto(body, &resp); err != nil {
 		return "", fmt.Errorf("decode send response: %w", err)
 	}
 
-	// Primary path: field 6 → field 100 → field 1.
-	if f6Raw := msgGetBytes(top, 6); len(f6Raw) > 0 {
-		if f6, err := pbDecode(f6Raw); err == nil {
-			if f100Raw := msgGetBytes(f6, 100); len(f100Raw) > 0 {
-				if f100, err := pbDecode(f100Raw); err == nil {
-					if id := msgGetString(f100, 1); id != "" {
-						return id, nil
-					}
-				}
-			}
-		}
+	if id := resp.GetPrimary().GetSend().GetMessageId(); id != "" {
+		return id, nil
 	}
-
-	// Fallback: field 8 → field 100 → field 1.
-	if f8Raw := msgGetBytes(top, 8); len(f8Raw) > 0 {
-		if f8, err := pbDecode(f8Raw); err == nil {
-			if f100Raw := msgGetBytes(f8, 100); len(f100Raw) > 0 {
-				if f100, err := pbDecode(f100Raw); err == nil {
-					if id := msgGetString(f100, 1); id != "" {
-						return id, nil
-					}
-				}
-			}
-		}
+	if id := resp.GetFallback().GetSend().GetMessageId(); id != "" {
+		return id, nil
 	}
 
 	return "", fmt.Errorf("server-assigned message ID not found in response")
@@ -350,54 +306,40 @@ type SendReactionParams struct {
 //	       field 2  "deprecated"
 //	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
 func buildReactionPayload(p SendReactionParams, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string) []byte {
-	// Reaction entry: {1: action, 2: "e:<emoji>", 4: userID}
-	var reactionEntry []byte
-	reactionEntry = append(reactionEntry, pbVarintField(1, uint64(p.Action))...)
-	reactionEntry = append(reactionEntry, pbStringField(2, "e:"+p.Emoji)...)
-	reactionEntry = append(reactionEntry, pbStringField(4, p.SelfUserID)...)
-
-	// Inner reaction message (8→705→1).
-	var inner []byte
-	inner = append(inner, pbStringField(1, p.ConvID)...)
-	inner = append(inner, pbVarintField(2, 1)...)
-	inner = append(inner, pbVarintField(3, p.ConvoSourceID)...)
-	inner = append(inner, pbVarintField(4, p.ServerMessageID)...)
-
-	inner = append(inner, pbStringField(5, clientMsgID)...)
-	inner = append(inner, pbEmbedField(6, reactionEntry)...)
-
-	// Reaction wrapper (8→705): { 1: inner, 2: "deprecated" }
-	var wrapper []byte
-	wrapper = append(wrapper, pbEmbedField(1, inner)...)
-	wrapper = append(wrapper, pbStringField(2, "deprecated")...)
-
-	// Field 8: { 705: wrapper }
-	field8Content := pbEmbedField(705, wrapper)
-
-	// Metadata key-value pairs (field 15, repeated).
-	var metaBytes []byte
-	for _, kv := range buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64) {
-		var pair []byte
-		pair = append(pair, pbStringField(1, kv.k)...)
-		pair = append(pair, pbStringField(2, kv.v)...)
-		metaBytes = append(metaBytes, pbEmbedField(15, pair)...)
+	msg := &tiktokpb.ReactionRequest{
+		MessageType:    protoUint64(705),
+		SubCommand:     protoUint64(10008),
+		ClientVersion:  protoString("1.6.0"),
+		Options:        emptyProtoMessage(),
+		PlatformFlag:   protoUint64(3),
+		Reserved_6:     protoUint64(0),
+		GitHash:        protoString(""),
+		DeviceId:       protoString(deviceID),
+		ClientPlatform: protoString("web"),
+		Metadata:       metadataKVsToProto(buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64)),
+		FinalFlag:      protoUint64(1),
+		Payload: &tiktokpb.ReactionRequestPayload{
+			Wrapper: &tiktokpb.ReactionWrapper{
+				Deprecated: protoString("deprecated"),
+				Body: &tiktokpb.ReactionBody{
+					ConversationId:  protoString(p.ConvID),
+					ActionFlag:      protoUint64(1),
+					SourceId:        protoUint64(p.ConvoSourceID),
+					ServerMessageId: protoUint64(p.ServerMessageID),
+					ClientMessageId: protoString(clientMsgID),
+					Reactions: []*tiktokpb.ReactionMutation{
+						{
+							Action:      protoUint64(uint64(p.Action)),
+							ReactionKey: protoString("e:" + p.Emoji),
+							SelfUserId:  protoString(p.SelfUserID),
+						},
+					},
+				},
+			},
+		},
 	}
 
-	// Top-level envelope — message type 705, sub-command 10008.
-	var msg []byte
-	msg = append(msg, pbVarintField(1, 705)...)
-	msg = append(msg, pbVarintField(2, 10008)...)
-	msg = append(msg, pbStringField(3, "1.6.0")...)
-	msg = append(msg, pbEmbedField(4, nil)...)
-	msg = append(msg, pbVarintField(5, 3)...)
-	msg = append(msg, pbVarintField(6, 0)...)
-	msg = append(msg, pbStringField(7, "")...)
-	msg = append(msg, pbEmbedField(8, field8Content)...)
-	msg = append(msg, pbStringField(9, deviceID)...)
-	msg = append(msg, pbStringField(11, "web")...)
-	msg = append(msg, metaBytes...)
-	msg = append(msg, pbVarintField(18, 1)...)
-	return msg
+	return mustMarshalProto(msg)
 }
 
 // ---------------------------------------------------------------------------

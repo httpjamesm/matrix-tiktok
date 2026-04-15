@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/coder/websocket"
+	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
 	"github.com/rs/zerolog"
 )
 
@@ -106,28 +107,19 @@ func (c *Client) deriveWSURL() (string, error) {
 //	                               [8]  JSON content payload   (bytes)
 //	                               [9]  repeated KV tag pairs  (bytes, repeated)
 func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, error) {
-	top, err := pbDecode(data)
-	if err != nil {
+	var frame tiktokpb.WebsocketFrame
+	if err := unmarshalProto(data, &frame); err != nil {
 		return nil, fmt.Errorf("decode top frame: %w", err)
 	}
 
-	// ── field 8: content envelope ────────────────────────────────────────────
-	envBytes := msgGetBytes(top, 8)
-	if len(envBytes) == 0 {
+	env := frame.GetEnvelope()
+	if env == nil {
 		return nil, nil // heartbeat or control frame — no content
 	}
-	env, err := pbDecode(envBytes)
-	if err != nil {
-		return nil, fmt.Errorf("decode content envelope: %w", err)
-	}
 
-	// Only inner type 500 carries a chat message.
-	innerType := msgGetUint(env, 1)
+	innerType := env.GetInnerType()
 	if innerType != 500 {
 		if innerType != 0 {
-			// Non-zero inner types are real events we don't handle yet
-			// (e.g. reactions, typing indicators).  Log them at debug so
-			// they can be identified and implemented later.
 			zerolog.Ctx(ctx).Debug().
 				Uint64("inner_type", innerType).
 				Int("frame_bytes", len(data)).
@@ -136,53 +128,26 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 		return nil, nil
 	}
 
-	// ── env[6]: command container ────────────────────────────────────────────
-	field6Bytes := msgGetBytes(env, 6)
-	if len(field6Bytes) == 0 {
+	chat := env.GetCommands().GetChat()
+	if chat == nil {
 		return nil, nil
 	}
-	field6, err := pbDecode(field6Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("decode command container (env.6): %w", err)
-	}
 
-	// ── field6[500]: chat container ──────────────────────────────────────────
-	chatBytes := msgGetBytes(field6, 500)
-	if len(chatBytes) == 0 {
-		return nil, nil
-	}
-	chat, err := pbDecode(chatBytes)
-	if err != nil {
-		return nil, fmt.Errorf("decode chat container (field6.500): %w", err)
-	}
-
-	convID := msgGetString(chat, 2)
+	convID := chat.GetConversationId()
 	if convID == "" {
 		return nil, fmt.Errorf("conversation ID missing from chat container")
 	}
 
-	// ── chat[5]: message detail ───────────────────────────────────────────────
-	detailBytes := msgGetBytes(chat, 5)
-	if len(detailBytes) == 0 {
+	detail := chat.GetDetail()
+	if detail == nil {
 		return nil, fmt.Errorf("message detail (chat.5) missing")
 	}
-	detail, err := pbDecode(detailBytes)
-	if err != nil {
-		return nil, fmt.Errorf("decode message detail (chat.5): %w", err)
-	}
 
-	numericMsgID := msgGetUint(detail, 3)
-	tsUs := int64(msgGetUint(detail, 4)) // microseconds
-	senderID := strconv.FormatUint(msgGetUint(detail, 7), 10)
-
-	// ── message ID ───────────────────────────────────────────────────────────
-	// Prefer the s:client_message_id tag (field 9, repeated KV pairs) so that
-	// deduplication aligns perfectly with messages fetched via the REST API,
-	// which also uses this UUID as its primary key.
-	msgID := extractClientMsgID(detail)
-
-	// ── JSON content ─────────────────────────────────────────────────────────
-	msgType, text, mediaURL, _ := parseMessageContent(ctx, c, msgGetBytes(detail, 8))
+	numericMsgID := detail.GetServerMessageId()
+	tsUs := int64(detail.GetTimestampUs())
+	senderID := strconv.FormatUint(detail.GetSenderUserId(), 10)
+	msgID := extractClientMsgIDFromTags(detail.GetTags())
+	msgType, text, mediaURL, _ := parseMessageContent(ctx, c, detail.GetContentJson())
 
 	msg := Message{
 		ServerID:        numericMsgID,
@@ -193,7 +158,7 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 		Text:            text,
 		MediaURL:        mediaURL,
 		TimestampMs:     tsUs / 1000, // µs → ms
-		// Reactions:       parseReactions(detail), reactions come from another ws event
+		// Reactions arrive through a different WS event type.
 	}
 	conv := Conversation{
 		ID: convID,

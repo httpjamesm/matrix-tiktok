@@ -1,0 +1,391 @@
+syntax = "proto2";
+
+package tiktok.im.v1;
+
+option go_package = "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb;tiktokpb";
+
+// Reverse-engineered TikTok web IM protobuf schema.
+//
+// This file intentionally prefers "known-good wire compatibility" over perfect
+// naming. Many field names come from observed behavior in the current client;
+// fields whose semantics are only partially understood stay conservatively
+// named as reserved_* until traffic captures justify something more specific.
+//
+// We keep proto2 so field presence and unknown-field preservation remain
+// available while the schema is still being mapped.
+
+// Empty embedded message used for field 4 in the common request envelope.
+message EmptyMessage {}
+
+// Generic metadata pair used by the REST request envelope at repeated field 15.
+//
+// Examples include browser/device properties, cookies mirrored as metadata, and
+// tt-ticket-guard keys for authenticated send/reaction calls.
+message MetadataKV {
+  optional string key = 1;
+  optional string value = 2;
+}
+
+// Generic tag/value pair used inside message bodies.
+//
+// Known keys include:
+// - "s:mentioned_users"
+// - "s:client_message_id"
+//
+// The value is bytes because TikTok sometimes stores an embedded message here
+// (for example the empty mentioned-users payload) and sometimes plain text.
+message MetadataTag {
+  optional string key = 1;
+  optional bytes value = 2;
+}
+
+// Common REST request envelope for the type-203 inbox bootstrap call.
+//
+// This wire shape is shared with other IM endpoints:
+// - field 1: top-level message type
+// - field 2: sub-command / identifier
+// - field 3: client version ("1.6.0" in current captures)
+// - field 4: empty options message
+// - field 5: platform flag (3 = web_pc)
+// - field 8: typed inner payload
+// - field 15: repeated metadata key/value pairs
+// - field 18: trailing flag currently sent as 1
+message InboxRequest {
+  // 203 = user_init_list / inbox bootstrap.
+  optional uint64 message_type = 1;
+  // Observed as 10001 for inbox bootstrap.
+  optional uint64 sub_command = 2;
+  optional string client_version = 3;
+  optional EmptyMessage options = 4;
+  // 3 = web_pc in current traffic.
+  optional uint64 platform_flag = 5;
+  optional uint64 reserved_6 = 6;
+  // Present but empty in current traffic.
+  optional string git_hash = 7;
+  optional InboxRequestPayload payload = 8;
+  optional string device_id = 9;
+  optional string client_platform = 11;
+  repeated MetadataKV metadata = 15;
+  // Observed as 1 on all current IM REST requests.
+  optional uint64 final_flag = 18;
+}
+
+// Typed payload wrapper for the type-203 request envelope.
+message InboxRequestPayload {
+  optional InboxInitRequest user_init_list = 203;
+}
+
+// Current inbox bootstrap inner body.
+//
+// The web client sends field 1 = 0 here.
+message InboxInitRequest {
+  optional uint64 reserved_1 = 1;
+}
+
+// Common response envelope used by the inbox endpoint.
+message InboxResponse {
+  // Server/application status code from the outer envelope.
+  optional uint64 status = 1;
+  // Endpoint-specific payload wrapper.
+  optional InboxResponsePayload payload = 6;
+}
+
+// Typed payload wrapper for inbox responses.
+message InboxResponsePayload {
+  optional InboxConversationList user_init_list = 203;
+}
+
+// Repeated inbox conversation entries.
+message InboxConversationList {
+  repeated InboxConversationEntry entries = 1;
+}
+
+// Minimal subset of an inbox conversation entry currently used by the bridge.
+//
+// The client treats entries with only placeholder content as non-real inbox
+// rows and drops them.
+message InboxConversationEntry {
+  // Format observed as "0:1:<userA>:<userB>" for direct messages.
+  optional string conversation_id = 1;
+  // Non-zero when the thread contains a real last message.
+  optional uint64 last_message_type = 4;
+  // Conversation source ID, reused by get_by_conversation and reactions.
+  optional uint64 source_id = 5;
+  // Raw preview bytes; "placeholder" indicates an empty stub row.
+  optional bytes last_message_preview = 8;
+}
+
+// Common REST request envelope for the type-301 get_by_conversation call.
+message GetByConversationRequest {
+  // 301 = get_by_conversation.
+  optional uint64 message_type = 1;
+  // Observed as 1 for this endpoint.
+  optional uint64 sub_command = 2;
+  optional string client_version = 3;
+  optional EmptyMessage options = 4;
+  optional uint64 platform_flag = 5;
+  optional uint64 reserved_6 = 6;
+  // Present but empty in current traffic.
+  optional string git_hash = 7;
+  optional GetByConversationRequestPayload payload = 8;
+  // Unlike inbox/send/reaction, the current request body does not include
+  // device_id at field 9 in this client implementation.
+  optional string client_platform = 11;
+  repeated MetadataKV metadata = 15;
+  optional uint64 final_flag = 18;
+}
+
+// Typed payload wrapper for the type-301 request envelope.
+message GetByConversationRequestPayload {
+  optional GetByConversationQuery query = 301;
+}
+
+// Query for one page of messages in a conversation.
+message GetByConversationQuery {
+  optional string conversation_id = 1;
+  // 1 = fetch latest / default direction in current traffic.
+  optional uint64 direction = 2;
+  // Must match the conversation's source_id from the inbox response.
+  optional uint64 source_id = 3;
+  // Observed constant 1 in current traffic.
+  optional uint64 reserved_4 = 4;
+  // Pagination cursor in microseconds. Zero means first page.
+  optional uint64 cursor_ts_us = 5;
+  // Requested page size.
+  optional uint64 count = 6;
+}
+
+// Common response envelope for the type-301 history endpoint.
+message GetByConversationResponse {
+  optional uint64 status = 1;
+  optional GetByConversationResponsePayload payload = 6;
+}
+
+// Typed payload wrapper for history responses.
+message GetByConversationResponsePayload {
+  optional ConversationMessageList conversation = 301;
+}
+
+// Repeated message entries returned by get_by_conversation.
+message ConversationMessageList {
+  repeated ConversationMessageEntry entries = 1;
+}
+
+// Minimal subset of a conversation message entry currently used by the bridge.
+message ConversationMessageEntry {
+  optional string conversation_id = 1;
+  // Server-assigned numeric message ID.
+  optional uint64 server_message_id = 3;
+  // Message send timestamp in microseconds.
+  optional uint64 timestamp_us = 4;
+  // Numeric sender user ID.
+  optional uint64 sender_user_id = 7;
+  // JSON message blob parsed separately by parseMessageContent.
+  optional bytes content_json = 8;
+  // Repeated message tags; s:client_message_id is the main one we use.
+  repeated MetadataTag tags = 9;
+  // Repeated reaction summaries attached to the message.
+  repeated ReactionSummary reactions = 15;
+  // Pagination cursor carried on the entry; callers use the last one returned.
+  optional uint64 cursor_ts_us = 25;
+}
+
+// Common REST request envelope for the type-100 send-message call.
+message SendRequest {
+  // 100 = send message.
+  optional uint64 message_type = 1;
+  // Observed as 10007 for send.
+  optional uint64 sub_command = 2;
+  optional string client_version = 3;
+  optional EmptyMessage options = 4;
+  optional uint64 platform_flag = 5;
+  optional uint64 reserved_6 = 6;
+  // Present but empty in current traffic.
+  optional string git_hash = 7;
+  optional SendRequestPayload payload = 8;
+  optional string device_id = 9;
+  optional string client_platform = 11;
+  // Includes the tt-ticket-guard metadata required by the web client.
+  repeated MetadataKV metadata = 15;
+  optional uint64 final_flag = 18;
+}
+
+// Typed payload wrapper for the type-100 request envelope.
+message SendRequestPayload {
+  optional SendMessageBody send = 100;
+}
+
+// Inner chat message body for POST /v1/message/send.
+//
+// Current text-message wire shape:
+// - field 1: conversation ID
+// - field 2: 1 (message kind = text)
+// - field 3: 0
+// - field 4: JSON body {"aweType":0,"text":"..."}
+// - field 5: repeated tags
+//   - "s:mentioned_users" with an empty embedded message value
+//   - "s:client_message_id" with the client UUID
+// - field 6: 7
+// - field 7: "deprecated"
+// - field 8: client UUID echoed directly
+message SendMessageBody {
+  optional string conversation_id = 1;
+  optional uint64 message_kind = 2;
+  optional uint64 reserved_3 = 3;
+  optional bytes content_json = 4;
+  repeated MetadataTag tags = 5;
+  optional uint64 reserved_6 = 6;
+  optional string deprecated = 7;
+  // Client-generated UUID v4 used for deduplication across REST and WS paths.
+  optional string client_message_id = 8;
+}
+
+// Send-message response envelope.
+//
+// The server-assigned message ID has been observed in both:
+// - field 6 -> field 100 -> field 1
+// - field 8 -> field 100 -> field 1
+//
+// We model both locations and prefer field 6 when present.
+message SendResponse {
+  optional uint64 status = 1;
+  optional SendResponsePayload primary = 6;
+  optional SendResponsePayload fallback = 8;
+}
+
+// Payload wrapper around the echoed send response.
+message SendResponsePayload {
+  optional SendResponseBody send = 100;
+}
+
+// Minimal send response body.
+message SendResponseBody {
+  // Server-assigned message ID returned as a string.
+  optional string message_id = 1;
+}
+
+// Common REST request envelope for the type-705 reaction mutation call.
+message ReactionRequest {
+  // 705 = set_property / reaction mutation.
+  optional uint64 message_type = 1;
+  // Observed as 10008 for reactions.
+  optional uint64 sub_command = 2;
+  optional string client_version = 3;
+  optional EmptyMessage options = 4;
+  optional uint64 platform_flag = 5;
+  optional uint64 reserved_6 = 6;
+  // Present but empty in current traffic.
+  optional string git_hash = 7;
+  optional ReactionRequestPayload payload = 8;
+  optional string device_id = 9;
+  optional string client_platform = 11;
+  // Includes tt-ticket-guard metadata, mirroring send.
+  repeated MetadataKV metadata = 15;
+  optional uint64 final_flag = 18;
+}
+
+// Typed payload wrapper for the type-705 request envelope.
+message ReactionRequestPayload {
+  optional ReactionWrapper wrapper = 705;
+}
+
+// Reaction wrapper observed at field 8 -> 705.
+//
+// Field 2 is literally the string "deprecated" in current traffic.
+message ReactionWrapper {
+  optional ReactionBody body = 1;
+  optional string deprecated = 2;
+}
+
+// Inner reaction mutation body.
+message ReactionBody {
+  optional string conversation_id = 1;
+  // Observed constant 1 in current traffic.
+  optional uint64 action_flag = 2;
+  // Conversation source ID from the inbox response.
+  optional uint64 source_id = 3;
+  optional uint64 server_message_id = 4;
+  // Fresh client-generated UUID for the mutation request.
+  optional string client_message_id = 5;
+  // Repeated in the schema, though current requests send a single mutation.
+  repeated ReactionMutation reactions = 6;
+}
+
+// One reaction add/remove mutation.
+//
+// Current wire shape: {1: action, 2: "e:<emoji>", 4: self_user_id}
+message ReactionMutation {
+  // 0 = add, 1 = remove.
+  optional uint64 action = 1;
+  // Encoded as "e:<emoji>" or occasionally "e:<alias>".
+  optional string reaction_key = 2;
+  // Decimal user ID string of the reacting user.
+  optional string self_user_id = 4;
+}
+
+// Reaction summary attached to a fetched message.
+//
+// TikTok commonly emits two entries per logical reaction: one using the real
+// Unicode emoji (for example "e:❤️") and one using a plain-text alias (for
+// example "e:love"). The bridge deduplicates those after parsing.
+message ReactionSummary {
+  optional string reaction_key = 1;
+  optional ReactionUsers users = 2;
+}
+
+// Container for the users who applied one reaction.
+message ReactionUsers {
+  repeated ReactionUser entries = 1;
+}
+
+// One user entry inside a reaction summary.
+message ReactionUser {
+  // Numeric user ID.
+  optional uint64 user_id = 1;
+  optional uint64 timestamp_s = 3;
+  // Preferred decimal-string form of user_id when present.
+  optional string user_id_str = 4;
+  optional uint64 timestamp_us = 6;
+}
+
+// Top-level WebSocket frame.
+//
+// Chat events currently arrive under field 8.
+message WebsocketFrame {
+  optional WebsocketEnvelope envelope = 8;
+}
+
+// WebSocket content envelope.
+//
+// field 1 identifies the inner event type. The bridge currently only handles
+// 500 (chat message) and ignores other event families.
+message WebsocketEnvelope {
+  // 500 = chat event.
+  optional uint64 inner_type = 1;
+  optional WebsocketCommands commands = 6;
+}
+
+// WebSocket command container.
+message WebsocketCommands {
+  optional WebsocketChat chat = 500;
+}
+
+// WebSocket chat event container.
+message WebsocketChat {
+  optional string conversation_id = 2;
+  optional WebsocketMessageDetail detail = 5;
+}
+
+// Message detail carried by a type-500 WebSocket chat event.
+//
+// This is close to ConversationMessageEntry but not identical: reactions are
+// delivered through different WS events, so they are not modeled here.
+message WebsocketMessageDetail {
+  optional uint64 server_message_id = 3;
+  optional uint64 timestamp_us = 4;
+  optional uint64 sender_user_id = 7;
+  // JSON message blob parsed separately by parseMessageContent.
+  optional bytes content_json = 8;
+  // Repeated tag pairs; s:client_message_id is used as the stable message key.
+  repeated MetadataTag tags = 9;
+}
