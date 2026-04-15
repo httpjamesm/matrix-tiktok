@@ -231,25 +231,31 @@ message MessageAttachmentPayload {
   optional StickerMessagePayload sticker = 7;
 }
 
-// One downloadable variant of a private DM image attachment.
+// One downloadable variant of a private DM media attachment.
 //
 // Field 1 is polymorphic in current captures: some rows carry the ASCII label
-// "full", while others carry a small embedded message for the preview/thumb
-// slot. We keep it as raw bytes to preserve both shapes without overcommitting
-// to semantics we haven't fully verified yet.
+// ("full", "view", "play", "cover"), while others carry a small embedded
+// message for the preview/thumb slot. We keep it as raw bytes to preserve both
+// shapes without overcommitting to semantics we haven't fully verified yet.
 message PrivateImageVariant {
   optional bytes label = 1;
   repeated string url = 2;
+  // JSON metadata blob on observed private_video "play" variants.
+  optional string metadata_json = 3;
   optional uint64 width = 20;
   optional uint64 height = 21;
+  optional uint64 duration_ms = 22;
   optional uint64 reserved_23 = 23;
 }
 
-// Field 24 on chat message rows when message_subtype = "private_image".
+// Field 24 on chat message rows when message_subtype = "private_image" or
+// "private_video".
 //
 // decrypt_key is the 32-byte AES-256-GCM key rendered as a hex string in
-// current captures. The signed CDN URLs in variants point to encrypted blobs:
-// nonce (12 bytes) || ciphertext || tag (16 bytes).
+// current private_image captures. Those image URLs point to encrypted blobs:
+// nonce (12 bytes) || ciphertext || tag (16 bytes). private_video captures use
+// the same outer field but currently leave decrypt_key empty and carry playable
+// video URLs instead.
 message PrivateImageAttachment {
   optional string path = 1;
   optional uint64 reserved_2 = 2;
@@ -280,9 +286,9 @@ message ConversationMessageEntry {
   optional MessageReplyReference message_reply = 18;
   // Outer attachment payload; field 7 currently carries sticker metadata.
   optional MessageAttachmentPayload attachment = 20;
-  // Observed as "sticker" and "private_image" in current captures.
+  // Observed as "sticker", "private_image", and "private_video" in current captures.
   optional string message_subtype = 21;
-  // Private DM image metadata (encrypted CDN URLs + decrypt key).
+  // Private DM media metadata (encrypted image URLs or direct video URLs).
   optional PrivateImageAttachment private_image = 24;
   // Pagination cursor carried on the entry; callers use the last one returned.
   optional uint64 cursor_ts_us = 25;
@@ -595,9 +601,9 @@ message WebsocketMessageDetail {
   optional MessageReplyReference message_reply = 18;
   // Outer attachment payload; field 7 currently carries sticker metadata.
   optional MessageAttachmentPayload attachment = 20;
-  // Observed as "sticker" and "private_image" in current captures.
+  // Observed as "sticker", "private_image", and "private_video" in current captures.
   optional string message_subtype = 21;
-  // Private DM image metadata (encrypted CDN URLs + decrypt key).
+  // Private DM media metadata (encrypted image URLs or direct video URLs).
   optional PrivateImageAttachment private_image = 24;
   optional uint64 cursor_ts_us = 25;
 }

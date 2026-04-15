@@ -298,7 +298,17 @@ func (tc *TikTokClient) convertVideoMessage(
 ) (*bridgev2.ConvertedMessage, error) {
 	log := zerolog.Ctx(ctx)
 
-	data, mime, err := tc.apiClient.DownloadVideo(ctx, msg.MediaURL)
+	var (
+		data []byte
+		mime string
+		err  error
+	)
+	isPrivateVideo := msg.MessageSubtype == "private_video"
+	if isPrivateVideo {
+		data, mime, err = tc.apiClient.DownloadPrivateVideo(ctx, msg.MediaURL)
+	} else {
+		data, mime, err = tc.apiClient.DownloadVideo(ctx, msg.MediaURL)
+	}
 	if err != nil {
 		log.Warn().Err(err).Str("url", msg.MediaURL).
 			Msg("Failed to download TikTok video; falling back to text")
@@ -316,6 +326,15 @@ func (tc *TikTokClient) convertVideoMessage(
 			MimeType: mime,
 			Size:     int(size),
 		},
+	}
+	if msg.MediaWidth > 0 {
+		content.Info.Width = msg.MediaWidth
+	}
+	if msg.MediaHeight > 0 {
+		content.Info.Height = msg.MediaHeight
+	}
+	if msg.MediaDurationMs > 0 {
+		content.Info.Duration = msg.MediaDurationMs
 	}
 
 	mxcURL, encFile, err := intent.UploadMediaStream(
@@ -342,31 +361,32 @@ func (tc *TikTokClient) convertVideoMessage(
 	content.URL = mxcURL
 	content.File = encFile
 
-	linkBody := msg.MediaURL
-	if msg.Text != "" {
-		linkBody = msg.Text + "\n" + msg.MediaURL
+	vmeta := messageMetaFromLib(msg)
+	parts := []*bridgev2.ConvertedMessagePart{
+		{
+			Type:       event.EventMessage,
+			Content:    content,
+			DBMetadata: vmeta,
+		},
+	}
+	if !isPrivateVideo {
+		linkBody := msg.MediaURL
+		if msg.Text != "" {
+			linkBody = msg.Text + "\n" + msg.MediaURL
+		}
+		parts = append(parts, &bridgev2.ConvertedMessagePart{
+			Type: event.EventMessage,
+			Content: &event.MessageEventContent{
+				MsgType:       event.MsgText,
+				Body:          linkBody,
+				Format:        event.FormatHTML,
+				FormattedBody: fmt.Sprintf(`<a href="%s">%s</a>`, msg.MediaURL, linkBody),
+			},
+			DBMetadata: vmeta,
+		})
 	}
 
-	vmeta := messageMetaFromLib(msg)
-	return &bridgev2.ConvertedMessage{
-		Parts: []*bridgev2.ConvertedMessagePart{
-			{
-				Type:       event.EventMessage,
-				Content:    content,
-				DBMetadata: vmeta,
-			},
-			{
-				Type: event.EventMessage,
-				Content: &event.MessageEventContent{
-					MsgType:       event.MsgText,
-					Body:          linkBody,
-					Format:        event.FormatHTML,
-					FormattedBody: fmt.Sprintf(`<a href="%s">%s</a>`, msg.MediaURL, linkBody),
-				},
-				DBMetadata: vmeta,
-			},
-		},
-	}, nil
+	return &bridgev2.ConvertedMessage{Parts: parts}, nil
 }
 
 // convertVideoFallback renders a TikTok video share as a plain-text message

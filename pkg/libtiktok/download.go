@@ -118,6 +118,25 @@ func (c *Client) DownloadPrivateImage(ctx context.Context, imageURL, decryptKey 
 	return plaintext, detectImageMIME(plaintext), nil
 }
 
+// DownloadPrivateVideo fetches an authenticated private-video CDN URL using the
+// logged-in TikTok browser session and returns the raw bytes plus MIME type.
+func (c *Client) DownloadPrivateVideo(ctx context.Context, videoURL string) ([]byte, string, error) {
+	resp, err := c.r.R().
+		SetContext(ctx).
+		SetHeader("Accept", "video/*,*/*;q=0.8").
+		SetHeader("Origin", "https://www.tiktok.com").
+		SetHeader("Referer", "https://www.tiktok.com/messages?lang=en").
+		Get(videoURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("download private video %s: %w", videoURL, err)
+	}
+	if resp.IsError() {
+		return nil, "", fmt.Errorf("private video URL %s returned HTTP %d", videoURL, resp.StatusCode())
+	}
+
+	return resp.Body(), normalizeContentType(resp.Header().Get("Content-Type"), guessPrivateVideoMIMEFromURL(videoURL)), nil
+}
+
 // extractVideoPlayAddr navigates the parsed __DEFAULT_SCOPE__ map returned by
 // the TikTok video detail page to pull out the nested video play address.
 //
@@ -274,4 +293,16 @@ func detectImageMIME(data []byte) string {
 		return "image/jpeg"
 	}
 	return mime
+}
+
+func guessPrivateVideoMIMEFromURL(u string) string {
+	lower := strings.ToLower(u)
+	switch {
+	case strings.Contains(lower, "mime_type=video_webm"):
+		return "video/webm"
+	case strings.Contains(lower, "mime_type=video_quicktime"):
+		return "video/quicktime"
+	default:
+		return "video/mp4"
+	}
 }

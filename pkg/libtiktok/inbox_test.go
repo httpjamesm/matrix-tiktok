@@ -182,9 +182,12 @@ func TestParsePrivateImageFromWebsocketDetailProto(t *testing.T) {
 		},
 	}
 
-	mediaURL, thumb, key, width, height, ok := parsePrivateImageFromWebsocketDetailProto(detail)
+	msgType, mediaURL, thumb, key, width, height, durationMs, ok := parsePrivateMediaFromWebsocketDetailProto(detail)
 	if !ok {
-		t.Fatal("parsePrivateImageFromWebsocketDetailProto returned ok=false")
+		t.Fatal("parsePrivateMediaFromWebsocketDetailProto returned ok=false")
+	}
+	if msgType != "image" {
+		t.Fatalf("msgType = %q, want image", msgType)
 	}
 	if mediaURL != fullURL {
 		t.Fatalf("mediaURL = %q, want %q", mediaURL, fullURL)
@@ -197,6 +200,118 @@ func TestParsePrivateImageFromWebsocketDetailProto(t *testing.T) {
 	}
 	if width != 808 || height != 1796 {
 		t.Fatalf("dimensions = %dx%d, want 808x1796", width, height)
+	}
+	if durationMs != 0 {
+		t.Fatalf("durationMs = %d, want 0", durationMs)
+	}
+}
+
+func TestParseMessageEntry_privateVideoOuterFields(t *testing.T) {
+	ctx := context.Background()
+	playURL := "https://webapp-sg.tiktok.com/private-video.mp4?mime_type=video_mp4&token=test-play"
+	coverURL := "https://p0-tiktok-dm-private-sg.tiktokv.com/private-video-cover~tplv-noop.image?token=test-cover"
+	entry := &tiktokpb.ConversationMessageEntry{
+		ConversationId:  protoString("0:1:1000000000000000001:2000000000000000002"),
+		ServerMessageId: protoUint64(8000000000000000003),
+		TimestampUs:     protoUint64(1704067200123456),
+		SenderUserId:    protoUint64(2000000000000000002),
+		ContentJson:     []byte(`{"hack":"1"}`),
+		MessageSubtype:  protoString("private_video"),
+		PrivateImage: &tiktokpb.PrivateImageAttachment{
+			Path: protoString("v0000testprivatevideo"),
+			Variants: []*tiktokpb.PrivateImageVariant{
+				{
+					Label:        []byte("play"),
+					Url:          []string{playURL, playURL},
+					MetadataJson: protoString(`{"media_type":"video","video_id":"v0000testprivatevideo"}`),
+					Width:        protoUint64(576),
+					Height:       protoUint64(1024),
+					DurationMs:   protoUint64(16835),
+				},
+				{
+					Label:  []byte("cover"),
+					Url:    []string{coverURL},
+					Width:  protoUint64(576),
+					Height: protoUint64(1024),
+				},
+			},
+		},
+	}
+
+	msg, _, err := parseMessageEntry(ctx, nil, entry)
+	if err != nil {
+		t.Fatalf("parseMessageEntry returned error: %v", err)
+	}
+	if msg.Type != "video" {
+		t.Fatalf("msg.Type = %q, want video", msg.Type)
+	}
+	if msg.MessageSubtype != "private_video" {
+		t.Fatalf("msg.MessageSubtype = %q, want private_video", msg.MessageSubtype)
+	}
+	if msg.Text != "[video]" {
+		t.Fatalf("msg.Text = %q, want [video]", msg.Text)
+	}
+	if msg.MediaURL != playURL {
+		t.Fatalf("msg.MediaURL = %q, want %q", msg.MediaURL, playURL)
+	}
+	if msg.ThumbnailURL != coverURL {
+		t.Fatalf("msg.ThumbnailURL = %q, want %q", msg.ThumbnailURL, coverURL)
+	}
+	if msg.MediaDurationMs != 16835 {
+		t.Fatalf("msg.MediaDurationMs = %d, want 16835", msg.MediaDurationMs)
+	}
+	if msg.MediaWidth != 576 || msg.MediaHeight != 1024 {
+		t.Fatalf("dimensions = %dx%d, want 576x1024", msg.MediaWidth, msg.MediaHeight)
+	}
+}
+
+func TestParsePrivateVideoFromWebsocketDetailProto(t *testing.T) {
+	playURL := "https://webapp-sg.tiktok.com/video.mp4?mime_type=video_mp4"
+	coverURL := "https://p0-tiktok-dm-private-sg.tiktokv.com/cover~tplv-noop.image"
+	detail := &tiktokpb.WebsocketMessageDetail{
+		ContentJson:    []byte(`{"hack":"1"}`),
+		MessageSubtype: protoString("private_video"),
+		PrivateImage: &tiktokpb.PrivateImageAttachment{
+			Variants: []*tiktokpb.PrivateImageVariant{
+				{
+					Label:        []byte("play"),
+					Url:          []string{playURL},
+					MetadataJson: protoString(`{"media_type":"video"}`),
+					Width:        protoUint64(576),
+					Height:       protoUint64(1024),
+					DurationMs:   protoUint64(16835),
+				},
+				{
+					Label:  []byte("cover"),
+					Url:    []string{coverURL},
+					Width:  protoUint64(576),
+					Height: protoUint64(1024),
+				},
+			},
+		},
+	}
+
+	msgType, mediaURL, thumb, key, width, height, durationMs, ok := parsePrivateMediaFromWebsocketDetailProto(detail)
+	if !ok {
+		t.Fatal("parsePrivateMediaFromWebsocketDetailProto returned ok=false")
+	}
+	if msgType != "video" {
+		t.Fatalf("msgType = %q, want video", msgType)
+	}
+	if mediaURL != playURL {
+		t.Fatalf("mediaURL = %q, want %q", mediaURL, playURL)
+	}
+	if thumb != coverURL {
+		t.Fatalf("thumb = %q, want %q", thumb, coverURL)
+	}
+	if key != "" {
+		t.Fatalf("key = %q, want empty", key)
+	}
+	if width != 576 || height != 1024 {
+		t.Fatalf("dimensions = %dx%d, want 576x1024", width, height)
+	}
+	if durationMs != 16835 {
+		t.Fatalf("durationMs = %d, want 16835", durationMs)
 	}
 }
 

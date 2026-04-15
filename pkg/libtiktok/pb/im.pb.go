@@ -1460,19 +1460,22 @@ func (x *MessageAttachmentPayload) GetSticker() *StickerMessagePayload {
 	return nil
 }
 
-// One downloadable variant of a private DM image attachment.
+// One downloadable variant of a private DM media attachment.
 //
 // Field 1 is polymorphic in current captures: some rows carry the ASCII label
-// "full", while others carry a small embedded message for the preview/thumb
-// slot. We keep it as raw bytes to preserve both shapes without overcommitting
-// to semantics we haven't fully verified yet.
+// ("full", "view", "play", "cover"), while others carry a small embedded
+// message for the preview/thumb slot. We keep it as raw bytes to preserve both
+// shapes without overcommitting to semantics we haven't fully verified yet.
 type PrivateImageVariant struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Label         []byte                 `protobuf:"bytes,1,opt,name=label" json:"label,omitempty"`
-	Url           []string               `protobuf:"bytes,2,rep,name=url" json:"url,omitempty"`
-	Width         *uint64                `protobuf:"varint,20,opt,name=width" json:"width,omitempty"`
-	Height        *uint64                `protobuf:"varint,21,opt,name=height" json:"height,omitempty"`
-	Reserved_23   *uint64                `protobuf:"varint,23,opt,name=reserved_23,json=reserved23" json:"reserved_23,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Label []byte                 `protobuf:"bytes,1,opt,name=label" json:"label,omitempty"`
+	Url   []string               `protobuf:"bytes,2,rep,name=url" json:"url,omitempty"`
+	// JSON metadata blob on observed private_video "play" variants.
+	MetadataJson  *string `protobuf:"bytes,3,opt,name=metadata_json,json=metadataJson" json:"metadata_json,omitempty"`
+	Width         *uint64 `protobuf:"varint,20,opt,name=width" json:"width,omitempty"`
+	Height        *uint64 `protobuf:"varint,21,opt,name=height" json:"height,omitempty"`
+	DurationMs    *uint64 `protobuf:"varint,22,opt,name=duration_ms,json=durationMs" json:"duration_ms,omitempty"`
+	Reserved_23   *uint64 `protobuf:"varint,23,opt,name=reserved_23,json=reserved23" json:"reserved_23,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1521,6 +1524,13 @@ func (x *PrivateImageVariant) GetUrl() []string {
 	return nil
 }
 
+func (x *PrivateImageVariant) GetMetadataJson() string {
+	if x != nil && x.MetadataJson != nil {
+		return *x.MetadataJson
+	}
+	return ""
+}
+
 func (x *PrivateImageVariant) GetWidth() uint64 {
 	if x != nil && x.Width != nil {
 		return *x.Width
@@ -1535,6 +1545,13 @@ func (x *PrivateImageVariant) GetHeight() uint64 {
 	return 0
 }
 
+func (x *PrivateImageVariant) GetDurationMs() uint64 {
+	if x != nil && x.DurationMs != nil {
+		return *x.DurationMs
+	}
+	return 0
+}
+
 func (x *PrivateImageVariant) GetReserved_23() uint64 {
 	if x != nil && x.Reserved_23 != nil {
 		return *x.Reserved_23
@@ -1542,11 +1559,14 @@ func (x *PrivateImageVariant) GetReserved_23() uint64 {
 	return 0
 }
 
-// Field 24 on chat message rows when message_subtype = "private_image".
+// Field 24 on chat message rows when message_subtype = "private_image" or
+// "private_video".
 //
 // decrypt_key is the 32-byte AES-256-GCM key rendered as a hex string in
-// current captures. The signed CDN URLs in variants point to encrypted blobs:
-// nonce (12 bytes) || ciphertext || tag (16 bytes).
+// current private_image captures. Those image URLs point to encrypted blobs:
+// nonce (12 bytes) || ciphertext || tag (16 bytes). private_video captures use
+// the same outer field but currently leave decrypt_key empty and carry playable
+// video URLs instead.
 type PrivateImageAttachment struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Path          *string                `protobuf:"bytes,1,opt,name=path" json:"path,omitempty"`
@@ -1639,9 +1659,9 @@ type ConversationMessageEntry struct {
 	MessageReply *MessageReplyReference `protobuf:"bytes,18,opt,name=message_reply,json=messageReply" json:"message_reply,omitempty"`
 	// Outer attachment payload; field 7 currently carries sticker metadata.
 	Attachment *MessageAttachmentPayload `protobuf:"bytes,20,opt,name=attachment" json:"attachment,omitempty"`
-	// Observed as "sticker" and "private_image" in current captures.
+	// Observed as "sticker", "private_image", and "private_video" in current captures.
 	MessageSubtype *string `protobuf:"bytes,21,opt,name=message_subtype,json=messageSubtype" json:"message_subtype,omitempty"`
-	// Private DM image metadata (encrypted CDN URLs + decrypt key).
+	// Private DM media metadata (encrypted image URLs or direct video URLs).
 	PrivateImage *PrivateImageAttachment `protobuf:"bytes,24,opt,name=private_image,json=privateImage" json:"private_image,omitempty"`
 	// Pagination cursor carried on the entry; callers use the last one returned.
 	CursorTsUs    *uint64 `protobuf:"varint,25,opt,name=cursor_ts_us,json=cursorTsUs" json:"cursor_ts_us,omitempty"`
@@ -3664,9 +3684,9 @@ type WebsocketMessageDetail struct {
 	MessageReply *MessageReplyReference `protobuf:"bytes,18,opt,name=message_reply,json=messageReply" json:"message_reply,omitempty"`
 	// Outer attachment payload; field 7 currently carries sticker metadata.
 	Attachment *MessageAttachmentPayload `protobuf:"bytes,20,opt,name=attachment" json:"attachment,omitempty"`
-	// Observed as "sticker" and "private_image" in current captures.
+	// Observed as "sticker", "private_image", and "private_video" in current captures.
 	MessageSubtype *string `protobuf:"bytes,21,opt,name=message_subtype,json=messageSubtype" json:"message_subtype,omitempty"`
-	// Private DM image metadata (encrypted CDN URLs + decrypt key).
+	// Private DM media metadata (encrypted image URLs or direct video URLs).
 	PrivateImage  *PrivateImageAttachment `protobuf:"bytes,24,opt,name=private_image,json=privateImage" json:"private_image,omitempty"`
 	CursorTsUs    *uint64                 `protobuf:"varint,25,opt,name=cursor_ts_us,json=cursorTsUs" json:"cursor_ts_us,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -3983,12 +4003,15 @@ const file_tiktok_im_v1_im_proto_rawDesc = "" +
 	"\x05asset\x18\x01 \x01(\v2\x1a.tiktok.im.v1.StickerAssetR\x05asset\x12F\n" +
 	"\rdisplay_texts\x18\x02 \x01(\v2!.tiktok.im.v1.StickerDisplayTextsR\fdisplayTexts\"Y\n" +
 	"\x18MessageAttachmentPayload\x12=\n" +
-	"\asticker\x18\a \x01(\v2#.tiktok.im.v1.StickerMessagePayloadR\asticker\"\x8c\x01\n" +
+	"\asticker\x18\a \x01(\v2#.tiktok.im.v1.StickerMessagePayloadR\asticker\"\xd2\x01\n" +
 	"\x13PrivateImageVariant\x12\x14\n" +
 	"\x05label\x18\x01 \x01(\fR\x05label\x12\x10\n" +
-	"\x03url\x18\x02 \x03(\tR\x03url\x12\x14\n" +
+	"\x03url\x18\x02 \x03(\tR\x03url\x12#\n" +
+	"\rmetadata_json\x18\x03 \x01(\tR\fmetadataJson\x12\x14\n" +
 	"\x05width\x18\x14 \x01(\x04R\x05width\x12\x16\n" +
 	"\x06height\x18\x15 \x01(\x04R\x06height\x12\x1f\n" +
+	"\vduration_ms\x18\x16 \x01(\x04R\n" +
+	"durationMs\x12\x1f\n" +
 	"\vreserved_23\x18\x17 \x01(\x04R\n" +
 	"reserved23\"\xab\x01\n" +
 	"\x16PrivateImageAttachment\x12\x12\n" +

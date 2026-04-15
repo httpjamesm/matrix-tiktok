@@ -7,25 +7,34 @@ import (
 	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
 )
 
-func parsePrivateImageFromConversationEntryProto(entry *tiktokpb.ConversationMessageEntry) (mediaURL, thumbnailURL, decryptKey string, width, height int, ok bool) {
+func parsePrivateMediaFromConversationEntryProto(entry *tiktokpb.ConversationMessageEntry) (msgType, mediaURL, thumbnailURL, decryptKey string, width, height, durationMs int, ok bool) {
 	if entry == nil {
-		return "", "", "", 0, 0, false
+		return "", "", "", "", 0, 0, 0, false
 	}
-	return parsePrivateImageAttachmentProto(entry.GetMessageSubtype(), entry.GetPrivateImage())
+	return parsePrivateMediaAttachmentProto(entry.GetMessageSubtype(), entry.GetPrivateImage())
 }
 
-func parsePrivateImageFromWebsocketDetailProto(detail *tiktokpb.WebsocketMessageDetail) (mediaURL, thumbnailURL, decryptKey string, width, height int, ok bool) {
+func parsePrivateMediaFromWebsocketDetailProto(detail *tiktokpb.WebsocketMessageDetail) (msgType, mediaURL, thumbnailURL, decryptKey string, width, height, durationMs int, ok bool) {
 	if detail == nil {
-		return "", "", "", 0, 0, false
+		return "", "", "", "", 0, 0, 0, false
 	}
-	return parsePrivateImageAttachmentProto(detail.GetMessageSubtype(), detail.GetPrivateImage())
+	return parsePrivateMediaAttachmentProto(detail.GetMessageSubtype(), detail.GetPrivateImage())
 }
 
-func parsePrivateImageAttachmentProto(messageSubtype string, attachment *tiktokpb.PrivateImageAttachment) (mediaURL, thumbnailURL, decryptKey string, width, height int, ok bool) {
+func parsePrivateMediaAttachmentProto(messageSubtype string, attachment *tiktokpb.PrivateImageAttachment) (msgType, mediaURL, thumbnailURL, decryptKey string, width, height, durationMs int, ok bool) {
 	if attachment == nil {
-		return "", "", "", 0, 0, false
+		return "", "", "", "", 0, 0, 0, false
 	}
 
+	switch {
+	case strings.EqualFold(messageSubtype, "private_video"):
+		return parsePrivateVideoAttachmentProto(attachment)
+	default:
+		return parsePrivateImageAttachmentProto(messageSubtype, attachment)
+	}
+}
+
+func parsePrivateImageAttachmentProto(messageSubtype string, attachment *tiktokpb.PrivateImageAttachment) (msgType, mediaURL, thumbnailURL, decryptKey string, width, height, durationMs int, ok bool) {
 	decryptKey = attachment.GetDecryptKey()
 	fullURL := ""
 	fullWidth := 0
@@ -51,7 +60,7 @@ func parsePrivateImageAttachmentProto(messageSubtype string, attachment *tiktokp
 			firstHeight = vh
 		}
 
-		label := normalizePrivateImageVariantLabel(variant.GetLabel())
+		label := normalizePrivateMediaVariantLabel(variant.GetLabel())
 		switch {
 		case label == "full" || strings.Contains(strings.ToLower(url), "default.image"):
 			if fullURL == "" {
@@ -84,7 +93,7 @@ func parsePrivateImageAttachmentProto(messageSubtype string, attachment *tiktokp
 		fullURL != "" ||
 		thumbURL != ""
 	if !ok {
-		return "", "", "", 0, 0, false
+		return "", "", "", "", 0, 0, 0, false
 	}
 
 	if fullWidth != 0 {
@@ -94,10 +103,79 @@ func parsePrivateImageAttachmentProto(messageSubtype string, attachment *tiktokp
 		width = thumbWidth
 		height = thumbHeight
 	}
-	return fullURL, thumbURL, decryptKey, width, height, true
+	return "image", fullURL, thumbURL, decryptKey, width, height, 0, true
 }
 
-func normalizePrivateImageVariantLabel(label []byte) string {
+func parsePrivateVideoAttachmentProto(attachment *tiktokpb.PrivateImageAttachment) (msgType, mediaURL, thumbnailURL, decryptKey string, width, height, durationMs int, ok bool) {
+	playURL := ""
+	playWidth := 0
+	playHeight := 0
+	playDuration := 0
+	coverURL := ""
+	coverWidth := 0
+	coverHeight := 0
+	firstURL := ""
+	firstWidth := 0
+	firstHeight := 0
+
+	for _, variant := range attachment.GetVariants() {
+		url := firstNonEmptyString(variant.GetUrl())
+		if url == "" {
+			continue
+		}
+
+		vw := int(variant.GetWidth())
+		vh := int(variant.GetHeight())
+		if firstURL == "" {
+			firstURL = url
+			firstWidth = vw
+			firstHeight = vh
+		}
+
+		label := normalizePrivateMediaVariantLabel(variant.GetLabel())
+		switch {
+		case label == "play" || strings.Contains(strings.ToLower(url), "mime_type=video_"):
+			if playURL == "" {
+				playURL = url
+				playWidth = vw
+				playHeight = vh
+				playDuration = int(variant.GetDurationMs())
+			}
+		case label == "cover" || strings.Contains(strings.ToLower(url), "tplv-noop.image"):
+			if coverURL == "" {
+				coverURL = url
+				coverWidth = vw
+				coverHeight = vh
+			}
+		}
+	}
+
+	if playURL == "" {
+		playURL = firstURL
+		playWidth = firstWidth
+		playHeight = firstHeight
+	}
+	if coverURL == "" {
+		coverURL = playURL
+		coverWidth = playWidth
+		coverHeight = playHeight
+	}
+
+	if playURL == "" && coverURL == "" {
+		return "", "", "", "", 0, 0, 0, false
+	}
+
+	if playWidth != 0 {
+		width = playWidth
+		height = playHeight
+	} else {
+		width = coverWidth
+		height = coverHeight
+	}
+	return "video", playURL, coverURL, "", width, height, playDuration, true
+}
+
+func normalizePrivateMediaVariantLabel(label []byte) string {
 	if len(label) == 0 {
 		return ""
 	}
@@ -113,6 +191,10 @@ func normalizePrivateImageVariantLabel(label []byte) string {
 		return "full"
 	case bytes.Contains(lowerBytes, []byte("view")):
 		return "view"
+	case bytes.Contains(lowerBytes, []byte("play")):
+		return "play"
+	case bytes.Contains(lowerBytes, []byte("cover")):
+		return "cover"
 	default:
 		return ""
 	}

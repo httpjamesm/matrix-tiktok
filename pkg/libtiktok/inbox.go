@@ -23,6 +23,7 @@ type Message struct {
 	ClientMessageID string
 	SenderID        string
 	Type            string // "text", "image", "video", "sticker"
+	MessageSubtype  string
 	Text            string
 	MediaURL        string
 	ThumbnailURL    string
@@ -32,6 +33,7 @@ type Message struct {
 	MimeType        string
 	MediaWidth      int
 	MediaHeight     int
+	MediaDurationMs int
 	TimestampMs     int64
 	Reactions       []Reaction
 	// ReplyToServerID is the parent message's server_message_id when this DM is a reply (aweType 703).
@@ -403,20 +405,27 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 	msgID := extractClientMsgIDFromTags(entry.GetTags())
 	contentJSON := entry.GetContentJson()
 	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, contentJSON)
+	messageSubtype := entry.GetMessageSubtype()
 	thumbURL := ""
 	decryptKey := ""
 	mediaWidth := 0
 	mediaHeight := 0
-	if imageURL, imageThumbURL, imageDecryptKey, width, height, ok := parsePrivateImageFromConversationEntryProto(entry); ok {
-		msgType = "image"
-		mediaURL = imageURL
-		thumbURL = imageThumbURL
-		decryptKey = imageDecryptKey
+	mediaDurationMs := 0
+	if privateType, assetURL, assetThumbURL, assetDecryptKey, width, height, durationMs, ok := parsePrivateMediaFromConversationEntryProto(entry); ok {
+		msgType = privateType
+		mediaURL = assetURL
+		thumbURL = assetThumbURL
+		decryptKey = assetDecryptKey
 		mimeType = ""
 		mediaWidth = width
 		mediaHeight = height
+		mediaDurationMs = durationMs
 		if text == "" {
-			text = "[photo]"
+			if privateType == "video" {
+				text = "[video]"
+			} else {
+				text = "[photo]"
+			}
 		}
 	}
 	if stickerURL, stickerText, stickerMIME, ok := parseStickerFromConversationEntryProto(entry); ok {
@@ -443,6 +452,7 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 		ConvID:          convID,
 		SenderID:        senderID,
 		Type:            msgType,
+		MessageSubtype:  messageSubtype,
 		Text:            text,
 		MediaURL:        mediaURL,
 		ThumbnailURL:    thumbURL,
@@ -450,6 +460,7 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 		MimeType:        mimeType,
 		MediaWidth:      mediaWidth,
 		MediaHeight:     mediaHeight,
+		MediaDurationMs: mediaDurationMs,
 		TimestampMs:     int64(tsMicros) / 1000,
 		Reactions:       parseReactionsProto(entry.GetReactions()),
 		ReplyToServerID: replyTo,
