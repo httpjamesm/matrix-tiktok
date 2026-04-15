@@ -44,6 +44,17 @@ const (
 	imAID        = "1988"
 )
 
+// isUnicodeEmoji reports whether s contains at least one non-ASCII rune,
+// indicating it is a real Unicode emoji glyph rather than a plain-text alias.
+func isUnicodeEmoji(s string) bool {
+	for _, r := range s {
+		if r > 0x7F {
+			return true
+		}
+	}
+	return false
+}
+
 // deduplicateReactions collapses reaction entries that share an identical set
 // of reacting users, keeping the entry whose Emoji contains non-ASCII runes
 // (i.e. an actual unicode emoji glyph) over a plain-text alias.
@@ -58,18 +69,6 @@ func deduplicateReactions(in []Reaction) []Reaction {
 		return in
 	}
 
-	isUnicode := func(s string) bool {
-		for _, r := range s {
-			if r > 0x7F {
-				return true
-			}
-		}
-		return false
-	}
-	fingerprint := func(r Reaction) string {
-		return strings.Join(r.UserIDs, "\x00")
-	}
-
 	type slot struct {
 		idx     int
 		isEmoji bool
@@ -78,17 +77,15 @@ func deduplicateReactions(in []Reaction) []Reaction {
 	out := make([]Reaction, 0, len(in))
 
 	for _, r := range in {
-		key := fingerprint(r)
-		emoji := isUnicode(r.Emoji)
+		key := strings.Join(r.UserIDs, "\x00")
+		uni := isUnicodeEmoji(r.Emoji)
 		if s, ok := seen[key]; ok {
-			// Replace the stored entry only when the incoming one is a real
-			// unicode emoji and the stored one is a plain-text alias.
-			if emoji && !s.isEmoji {
+			if uni && !s.isEmoji {
 				out[s.idx] = r
 				seen[key] = slot{idx: s.idx, isEmoji: true}
 			}
 		} else {
-			seen[key] = slot{idx: len(out), isEmoji: emoji}
+			seen[key] = slot{idx: len(out), isEmoji: uni}
 			out = append(out, r)
 		}
 	}

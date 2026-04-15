@@ -151,17 +151,34 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 
 		log.Info().Msg("WebSocket connected, listening for messages")
 
-		for wsMsg := range ch {
-			// Update the otherUsers cache so GetChatInfo can build the room
-			// membership list.  For messages from others the sender IS the
-			// other participant.  For echoes of our own messages the cache
-			// was already populated by the initial fetchAndDispatch backfill.
-			if wsMsg.Message.SenderID != tc.meta.UserID {
-				tc.mu.Lock()
-				tc.otherUsers[wsMsg.Conversation.ID] = wsMsg.Message.SenderID
-				tc.mu.Unlock()
+		for evt := range ch {
+			switch {
+			case evt.Message != nil:
+				wsMsg := evt.Message
+				log.Debug().
+					Str("conv_id", wsMsg.Conversation.ID).
+					Str("sender_id", wsMsg.Message.SenderID).
+					Str("type", wsMsg.Message.Type).
+					Uint64("server_id", wsMsg.Message.ServerID).
+					Msg("WS event: chat message")
+				if wsMsg.Message.SenderID != tc.meta.UserID {
+					tc.mu.Lock()
+					tc.otherUsers[wsMsg.Conversation.ID] = wsMsg.Message.SenderID
+					tc.mu.Unlock()
+				}
+				tc.dispatchMessage(&wsMsg.Conversation, wsMsg.Message)
+			case evt.Reaction != nil:
+				r := evt.Reaction
+				log.Info().
+					Str("conv_id", r.ConversationID).
+					Uint64("server_message_id", r.ServerMessageID).
+					Str("sender_user_id", r.SenderUserID).
+					Int("modifications", len(r.Modifications)).
+					Msg("WS event: reaction property update")
+				tc.dispatchWSReaction(evt.Reaction)
+			default:
+				log.Warn().Msg("WS event: received event with nil Message and nil Reaction")
 			}
-			tc.dispatchMessage(&wsMsg.Conversation, wsMsg.Message)
 		}
 
 		// ch was closed — the connection dropped or ctx was cancelled.
@@ -363,6 +380,65 @@ func (tc *TikTokClient) dispatchReactions(conv *libtiktok.Conversation, msg libt
 			HasAllUsers: true,
 		},
 	})
+}
+
+// dispatchWSReaction queues individual RemoteEventReaction / RemoteEventReactionRemove
+// events for each modification in a WebSocket property-update (type 705) event.
+func (tc *TikTokClient) dispatchWSReaction(evt *libtiktok.WSReactionEvent) {
+	log := tc.userLogin.Log.With().
+		Str("component", "reaction-dispatch").
+		Str("conv_id", evt.ConversationID).
+		Uint64("server_message_id", evt.ServerMessageID).
+		Logger()
+
+	msgID := networkid.MessageID(strconv.FormatUint(evt.ServerMessageID, 10))
+
+	senderUID := evt.SenderUserID
+	if senderUID == "" {
+		senderUID = tc.meta.UserID
+	}
+
+	for _, mod := range evt.Modifications {
+		evtType := bridgev2.RemoteEventReaction
+		if mod.Op == 1 {
+			evtType = bridgev2.RemoteEventReactionRemove
+		}
+
+		log.Info().
+			Str("emoji", mod.Emoji).
+			Int("op", mod.Op).
+			Str("sender_id", senderUID).
+			Str("target_msg_id", string(msgID)).
+			Str("portal_id", string(makePortalID(evt.ConversationID))).
+			Str("event_type", evtType.String()).
+			Msg("Queuing remote reaction event")
+
+		tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Reaction{
+			EventMeta: simplevent.EventMeta{
+				Type: evtType,
+				LogContext: func(c zerolog.Context) zerolog.Context {
+					return c.
+						Str("conversation_id", evt.ConversationID).
+						Uint64("message_id", evt.ServerMessageID).
+						Str("emoji", mod.Emoji).
+						Str("sender_id", senderUID).
+						Int("op", mod.Op)
+				},
+				PortalKey: networkid.PortalKey{
+					ID:       makePortalID(evt.ConversationID),
+					Receiver: tc.userLogin.ID,
+				},
+				Sender: bridgev2.EventSender{
+					IsFromMe: senderUID == tc.meta.UserID,
+					Sender:   makeUserID(senderUID),
+				},
+				Timestamp: time.Now(),
+			},
+			TargetMessage: msgID,
+			EmojiID:       networkid.EmojiID(mod.Emoji),
+			Emoji:         mod.Emoji,
+		})
+	}
 }
 
 // ────────────────────────────────────────────────────────────────────────────

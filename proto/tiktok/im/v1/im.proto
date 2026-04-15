@@ -348,7 +348,52 @@ message ReactionUser {
   optional uint64 timestamp_us = 6;
 }
 
-// Top-level WebSocket frame.
+// ---------------------------------------------------------------------------
+// WebSocket outer envelope (LZ4 compressed transport)
+// ---------------------------------------------------------------------------
+
+// Top-level binary frame received from the TikTok IM WebSocket.
+//
+// This is *not* the chat payload itself — it is an outer transport envelope.
+// The actual IM protobuf sits inside field 8, optionally LZ4-block-compressed
+// (signalled by field 6 = "__lz4").
+message WebsocketOuterFrame {
+  optional uint64 stream_id = 1;
+  optional uint64 sequence = 2;
+  optional uint64 flag_3 = 3;
+  optional uint64 flag_4 = 4;
+  // Header map (repeated key/value). Examples: x_frontier_msg_id, traceparent.
+  repeated WebsocketHeader headers = 5;
+  // Compression algorithm tag. When this equals "__lz4", field 8 contains an
+  // LZ4 raw-block-compressed protobuf; otherwise field 8 is raw protobuf.
+  optional bytes compression = 6;
+  optional WebsocketMeta meta = 7;
+  // Primary payload: inner protobuf, possibly LZ4-compressed.
+  optional bytes payload = 8;
+  optional bytes trace_9 = 9;
+  optional bytes trace_10 = 10;
+  optional bytes trace_11 = 11;
+  optional uint64 reserved_12 = 12;
+  optional uint64 reserved_13 = 13;
+  optional WebsocketMeta reserved_14 = 14;
+}
+
+// Repeated header entry inside the outer envelope (field 5).
+message WebsocketHeader {
+  optional bytes name = 1;
+  optional bytes value = 2;
+}
+
+// Small nested metadata message (field 7 / 14 of the outer envelope).
+message WebsocketMeta {
+  optional uint64 value = 14;
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket inner protobuf (after LZ4 decompression)
+// ---------------------------------------------------------------------------
+
+// Top-level inner protobuf decoded from the WebSocket payload.
 //
 // Chat events currently arrive under field 8.
 message WebsocketFrame {
@@ -357,10 +402,10 @@ message WebsocketFrame {
 
 // WebSocket content envelope.
 //
-// field 1 identifies the inner event type. The bridge currently only handles
-// 500 (chat message) and ignores other event families.
+// field 1 identifies the inner event type. The bridge currently handles:
+// - 500: chat message
+// - 705: property mutation (reactions)
 message WebsocketEnvelope {
-  // 500 = chat event.
   optional uint64 inner_type = 1;
   optional WebsocketCommands commands = 6;
 }
@@ -368,6 +413,7 @@ message WebsocketEnvelope {
 // WebSocket command container.
 message WebsocketCommands {
   optional WebsocketChat chat = 500;
+  optional WebsocketPropertyUpdate property_update = 705;
 }
 
 // WebSocket chat event container.
@@ -388,4 +434,18 @@ message WebsocketMessageDetail {
   optional bytes content_json = 8;
   // Repeated tag pairs; s:client_message_id is used as the stable message key.
   repeated MetadataTag tags = 9;
+}
+
+// Property-update container carried by inner_type 705.
+//
+// Reactions arrive as s:property_modify in the tag list; the value is a JSON
+// blob describing which emojis were added or removed.
+message WebsocketPropertyUpdate {
+  optional string conversation_id = 1;
+  optional uint64 message_kind = 2;
+  optional uint64 reserved_3 = 3;
+  optional uint64 reserved_4 = 4;
+  optional bytes content_json = 5;
+  // Repeated tag pairs — s:property_modify carries the reaction JSON.
+  repeated MetadataTag tags = 6;
 }

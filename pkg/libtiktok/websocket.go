@@ -1,26 +1,49 @@
 package libtiktok
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/coder/websocket"
-	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
+	lz4 "github.com/pierrec/lz4/v4"
 	"github.com/rs/zerolog"
+
+	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
 )
 
-// WSMessage is the unit of communication between libtiktok and the connector
-// layer. It carries everything the bridge needs to dispatch a single inbound
-// chat event without any further API calls (except for video-share URL
-// resolution which happens inside parseMessageContent).
+// WSEvent is the unit of communication between libtiktok and the connector
+// layer. Exactly one of Message or Reaction is non-nil.
+type WSEvent struct {
+	Message  *WSMessage
+	Reaction *WSReactionEvent
+}
+
+// WSMessage carries a single inbound chat event.
 type WSMessage struct {
 	Conversation Conversation
 	Message      Message
+}
+
+// WSReactionEvent carries a reaction property-modify update from the WebSocket.
+type WSReactionEvent struct {
+	ConversationID  string
+	ServerMessageID uint64
+	SenderUserID    string // TikTok numeric user ID of the person who reacted
+	Modifications   []ReactionModification
+}
+
+// ReactionModification is one add/remove entry inside a property_modify JSON.
+type ReactionModification struct {
+	Op    int    // 0 = add, 1 = remove
+	Emoji string // raw emoji character(s), e.g. "❤️"
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -85,48 +108,110 @@ func (c *Client) deriveWSURL() (string, error) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// LZ4 outer envelope decompressor
+// ────────────────────────────────────────────────────────────────────────────
+
+// lz4CompressionTag is the value of outer-envelope field 6 when the payload is
+// LZ4-block-compressed.
+var lz4CompressionTag = []byte("__lz4")
+
+// decompressOuterEnvelope parses the WebSocket outer envelope, checks for LZ4
+// compression, decompresses if needed, and returns the raw inner protobuf bytes.
+func decompressOuterEnvelope(data []byte) ([]byte, error) {
+	var outer tiktokpb.WebsocketOuterFrame
+	if err := unmarshalProto(data, &outer); err != nil {
+		return nil, fmt.Errorf("decode outer envelope: %w", err)
+	}
+
+	payload := outer.GetPayload()
+	if len(payload) == 0 {
+		return nil, nil
+	}
+
+	if !bytes.Equal(outer.GetCompression(), lz4CompressionTag) {
+		return payload, nil
+	}
+
+	return lz4BlockDecompress(payload)
+}
+
+// lz4BlockDecompress decompresses an LZ4 raw block. Because the uncompressed
+// size is not carried in-band, we try increasingly large buffers until
+// decompression succeeds.
+func lz4BlockDecompress(src []byte) ([]byte, error) {
+	for mult := 4; mult <= 256; mult *= 2 {
+		dst := make([]byte, len(src)*mult)
+		n, err := lz4.UncompressBlock(src, dst)
+		if err != nil {
+			continue
+		}
+		return dst[:n], nil
+	}
+	return nil, fmt.Errorf("LZ4 block decompress failed: output buffer exhausted")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Protobuf frame parser
 // ────────────────────────────────────────────────────────────────────────────
 
-// parseWSFrame decodes one binary WebSocket frame and returns a *WSMessage
-// when the frame carries a chat event (inner type 500).  Returns (nil, nil)
-// for heartbeat / control frames that carry no chat payload.
-//
-// Protobuf path (confirmed from live traffic captures):
-//
-//	top
-//	  └─ [8]  content envelope
-//	       [1]   inner type  (must be 500 for chat)
-//	       [6]   command container
-//	               [500]  chat container
-//	                        [2]  conversation ID  (bytes → string)
-//	                        [5]  message detail
-//	                               [3]  numeric message ID     (varint uint64)
-//	                               [4]  send timestamp         (varint, microseconds)
-//	                               [7]  sender user ID         (varint uint64)
-//	                               [8]  JSON content payload   (bytes)
-//	                               [9]  repeated KV tag pairs  (bytes, repeated)
-func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, error) {
-	var frame tiktokpb.WebsocketFrame
-	if err := unmarshalProto(data, &frame); err != nil {
-		return nil, fmt.Errorf("decode top frame: %w", err)
+// parseWSFrame decodes one binary WebSocket frame: first the outer LZ4
+// transport envelope, then the inner protobuf. Returns a *WSEvent when the
+// frame carries a chat or reaction event, or (nil, nil) for heartbeats.
+func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSEvent, error) {
+	log := zerolog.Ctx(ctx)
+
+	inner, err := decompressOuterEnvelope(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(inner) == 0 {
+		return nil, nil
 	}
 
-	env := frame.GetEnvelope()
-	if env == nil {
-		return nil, nil // heartbeat or control frame — no content
+	log.Trace().
+		Int("outer_bytes", len(data)).
+		Int("inner_bytes", len(inner)).
+		Msg("WS frame decompressed")
+
+	// The outer envelope's field 8 (payload) contains the WebsocketEnvelope
+	// directly — NOT a WebsocketFrame wrapping it at another field 8.
+	var env tiktokpb.WebsocketEnvelope
+	if err := unmarshalProto(inner, &env); err != nil {
+		return nil, fmt.Errorf("decode inner envelope: %w", err)
 	}
 
 	innerType := env.GetInnerType()
-	if innerType != 500 {
+	if innerType == 0 && env.GetCommands() == nil {
+		log.Trace().Msg("WS frame has no inner type or commands (heartbeat/control)")
+		return nil, nil
+	}
+
+	log.Debug().
+		Uint64("inner_type", innerType).
+		Int("frame_bytes", len(data)).
+		Msg("WS inner frame decoded")
+
+	switch innerType {
+	case 500:
+		return c.parseChatEvent(ctx, &env)
+	case 705:
+		return c.parsePropertyUpdateEvent(ctx, &env)
+	default:
 		if innerType != 0 {
-			zerolog.Ctx(ctx).Debug().
+			log.Debug().
 				Uint64("inner_type", innerType).
 				Int("frame_bytes", len(data)).
 				Msg("Unhandled WS inner type — skipping")
 		}
 		return nil, nil
 	}
+}
+
+// parseChatEvent handles inner_type 500, which carries both regular chat
+// messages and property updates (reactions). If the detail tags contain
+// s:property_modify, the frame is a reaction event, not a chat message.
+func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnvelope) (*WSEvent, error) {
+	log := zerolog.Ctx(ctx)
 
 	chat := env.GetCommands().GetChat()
 	if chat == nil {
@@ -143,11 +228,24 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 		return nil, fmt.Errorf("message detail (chat.5) missing")
 	}
 
+	// Check tags for s:property_modify — if present this is a reaction event
+	// disguised as a type-500 frame, not a real chat message.
+	if evt := c.tryParseReactionFromTags(ctx, convID, detail.GetTags()); evt != nil {
+		return evt, nil
+	}
+
 	numericMsgID := detail.GetServerMessageId()
 	tsUs := int64(detail.GetTimestampUs())
 	senderID := strconv.FormatUint(detail.GetSenderUserId(), 10)
 	msgID := extractClientMsgIDFromTags(detail.GetTags())
 	msgType, text, mediaURL, _ := parseMessageContent(ctx, c, detail.GetContentJson())
+
+	log.Debug().
+		Str("conv_id", convID).
+		Str("sender_id", senderID).
+		Str("msg_type", msgType).
+		Uint64("server_msg_id", numericMsgID).
+		Msg("WS 500: chat message")
 
 	msg := Message{
 		ServerID:        numericMsgID,
@@ -157,16 +255,238 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 		Type:            msgType,
 		Text:            text,
 		MediaURL:        mediaURL,
-		TimestampMs:     tsUs / 1000, // µs → ms
-		// Reactions arrive through a different WS event type.
+		TimestampMs:     tsUs / 1000,
 	}
 	conv := Conversation{
-		ID: convID,
-		// Participants carries only the sender here; the connector layer
-		// supplements the other participant from its otherUsers cache.
+		ID:           convID,
 		Participants: []string{senderID},
 	}
-	return &WSMessage{Conversation: conv, Message: msg}, nil
+	return &WSEvent{Message: &WSMessage{Conversation: conv, Message: msg}}, nil
+}
+
+// tryParseReactionFromTags checks whether the tag list contains
+// s:property_modify. If it does, the frame is a reaction event and we return a
+// WSEvent with a Reaction payload. Returns nil when the tags carry no reaction.
+func (c *Client) tryParseReactionFromTags(ctx context.Context, convID string, tags []*tiktokpb.MetadataTag) *WSEvent {
+	log := zerolog.Ctx(ctx)
+
+	var propertyJSON []byte
+	var serverMsgIDStr string
+	for _, tag := range tags {
+		switch tag.GetKey() {
+		case "s:property_modify":
+			propertyJSON = tag.GetValue()
+		case "s:server_message_id":
+			serverMsgIDStr = string(tag.GetValue())
+		}
+	}
+	if len(propertyJSON) == 0 {
+		return nil
+	}
+
+	log.Debug().
+		Str("conv_id", convID).
+		Str("property_json", string(propertyJSON)).
+		Msg("WS 500: frame contains s:property_modify — treating as reaction")
+
+	var prop propertyModify
+	if err := json.Unmarshal(propertyJSON, &prop); err != nil {
+		log.Warn().Err(err).
+			Str("conv_id", convID).
+			Msg("Failed to parse s:property_modify JSON from type-500 frame")
+		return nil
+	}
+
+	log.Debug().
+		Str("conv_id", convID).
+		Uint64("user_id", prop.UserId).
+		Uint64("server_message_id", prop.ServerMessageId).
+		Int("modify_count", len(prop.Modifys)).
+		Msg("WS 500: parsed property_modify")
+
+	if len(prop.Modifys) == 0 {
+		return nil
+	}
+
+	serverMsgID := prop.ServerMessageId
+	if serverMsgID == 0 && serverMsgIDStr != "" {
+		serverMsgID, _ = strconv.ParseUint(serverMsgIDStr, 10, 64)
+	}
+
+	mods := deduplicateModifications(prop.Modifys)
+	if len(mods) == 0 {
+		return nil
+	}
+
+	senderUID := ""
+	if prop.UserId != 0 {
+		senderUID = strconv.FormatUint(prop.UserId, 10)
+	}
+
+	log.Info().
+		Str("conv_id", convID).
+		Uint64("server_message_id", serverMsgID).
+		Str("sender_user_id", senderUID).
+		Int("reaction_count", len(mods)).
+		Msg("WS 500: reaction event extracted from property_modify")
+
+	return &WSEvent{
+		Reaction: &WSReactionEvent{
+			ConversationID:  convID,
+			ServerMessageID: serverMsgID,
+			SenderUserID:    senderUID,
+			Modifications:   mods,
+		},
+	}
+}
+
+// parsePropertyUpdateEvent handles inner_type 705 (property mutation), which
+// includes reaction adds/removes.
+func (c *Client) parsePropertyUpdateEvent(ctx context.Context, env *tiktokpb.WebsocketEnvelope) (*WSEvent, error) {
+	log := zerolog.Ctx(ctx)
+
+	pu := env.GetCommands().GetPropertyUpdate()
+	if pu == nil {
+		log.Debug().Msg("WS 705: property_update field is nil — commands may use a different field number")
+		return nil, nil
+	}
+
+	convID := pu.GetConversationId()
+	if convID == "" {
+		log.Debug().Msg("WS 705: property_update has no conversation_id")
+		return nil, nil
+	}
+
+	var tagKeys []string
+	var propertyJSON []byte
+	var serverMsgIDStr string
+	for _, tag := range pu.GetTags() {
+		tagKeys = append(tagKeys, tag.GetKey())
+		switch tag.GetKey() {
+		case "s:property_modify":
+			propertyJSON = tag.GetValue()
+		case "s:server_message_id":
+			serverMsgIDStr = string(tag.GetValue())
+		}
+	}
+
+	log.Debug().
+		Str("conv_id", convID).
+		Strs("tag_keys", tagKeys).
+		Int("property_json_len", len(propertyJSON)).
+		Str("server_msg_id_tag", serverMsgIDStr).
+		Msg("WS 705: property update received")
+
+	if len(propertyJSON) == 0 {
+		log.Debug().
+			Str("conv_id", convID).
+			Msg("WS 705: no s:property_modify tag found")
+		return nil, nil
+	}
+
+	log.Debug().
+		Str("conv_id", convID).
+		Str("property_json", string(propertyJSON)).
+		Msg("WS 705: raw property_modify JSON")
+
+	var prop propertyModify
+	if err := json.Unmarshal(propertyJSON, &prop); err != nil {
+		log.Warn().Err(err).
+			Str("conv_id", convID).
+			Msg("Failed to parse s:property_modify JSON")
+		return nil, nil
+	}
+
+	log.Debug().
+		Str("conv_id", convID).
+		Uint64("user_id", prop.UserId).
+		Uint64("server_message_id", prop.ServerMessageId).
+		Int("modify_count", len(prop.Modifys)).
+		Msg("WS 705: parsed property_modify")
+
+	if len(prop.Modifys) == 0 {
+		log.Debug().
+			Str("conv_id", convID).
+			Msg("WS 705: Modifys array is empty")
+		return nil, nil
+	}
+
+	serverMsgID := prop.ServerMessageId
+	if serverMsgID == 0 && serverMsgIDStr != "" {
+		serverMsgID, _ = strconv.ParseUint(serverMsgIDStr, 10, 64)
+	}
+
+	mods := deduplicateModifications(prop.Modifys)
+	if len(mods) == 0 {
+		log.Debug().
+			Str("conv_id", convID).
+			Msg("WS 705: no valid reaction modifications after filtering")
+		return nil, nil
+	}
+
+	senderUID := ""
+	if prop.UserId != 0 {
+		senderUID = strconv.FormatUint(prop.UserId, 10)
+	}
+
+	log.Info().
+		Str("conv_id", convID).
+		Uint64("server_message_id", serverMsgID).
+		Str("sender_user_id", senderUID).
+		Int("reaction_count", len(mods)).
+		Msg("WS 705: reaction event parsed successfully")
+
+	return &WSEvent{
+		Reaction: &WSReactionEvent{
+			ConversationID:  convID,
+			ServerMessageID: serverMsgID,
+			SenderUserID:    senderUID,
+			Modifications:   mods,
+		},
+	}, nil
+}
+
+// propertyModify is the JSON structure carried by s:property_modify in a 705
+// WebSocket event. Only the fields needed for reaction processing are decoded.
+type propertyModify struct {
+	UserId          uint64             `json:"UserId"`
+	ServerMessageId uint64             `json:"ServerMessageId"`
+	Modifys         []propertyModifyOp `json:"Modifys"`
+}
+
+type propertyModifyOp struct {
+	Op  int    `json:"Op"`
+	Key string `json:"Key"`
+}
+
+// deduplicateModifications collapses the duplicate emoji/alias entries that
+// TikTok sends for every reaction (e.g. "e:❤️" + "e:love") into a single
+// ReactionModification, preferring the Unicode emoji over the text alias.
+func deduplicateModifications(ops []propertyModifyOp) []ReactionModification {
+	type slot struct {
+		idx     int
+		isEmoji bool
+	}
+	seen := make(map[int]slot, len(ops))
+	out := make([]ReactionModification, 0, len(ops))
+
+	for _, m := range ops {
+		emoji := strings.TrimPrefix(m.Key, "e:")
+		if emoji == "" {
+			continue
+		}
+		uni := isUnicodeEmoji(emoji)
+		if s, ok := seen[m.Op]; ok {
+			if uni && !s.isEmoji {
+				out[s.idx] = ReactionModification{Op: m.Op, Emoji: emoji}
+				seen[m.Op] = slot{idx: s.idx, isEmoji: true}
+			}
+		} else {
+			seen[m.Op] = slot{idx: len(out), isEmoji: uni}
+			out = append(out, ReactionModification{Op: m.Op, Emoji: emoji})
+		}
+	}
+	return out
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -174,23 +494,18 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 // ────────────────────────────────────────────────────────────────────────────
 
 // ConnectWebSocket dials the TikTok IM WebSocket, starts a background read
-// pump goroutine, and returns a channel that emits one WSMessage per inbound
-// chat event.
+// pump goroutine, and returns a channel that emits one WSEvent per inbound
+// event (chat message or reaction).
+//
+// Each binary frame is first decoded through the LZ4 outer envelope (field 6
+// = "__lz4" triggers block decompression of field 8), then the inner protobuf
+// is parsed and dispatched by inner_type (500 = chat, 705 = property update).
 //
 // The caller owns the channel lifetime: it is closed when ctx is cancelled or
 // the server closes the connection, which is the signal the connector uses to
 // trigger a reconnect.  Non-chat frames (heartbeats, ACKs, etc.) are silently
 // discarded; parse errors are logged but do not terminate the pump.
-//
-// Usage in the connector:
-//
-//	ch, err := c.apiClient.ConnectWebSocket(ctx)
-//	if err != nil { /* handle dial error */ }
-//	for wsMsg := range ch {
-//	    tc.dispatchMessage(&wsMsg.Conversation, wsMsg.Message)
-//	}
-//	// channel closed → reconnect
-func (c *Client) ConnectWebSocket(ctx context.Context) (<-chan WSMessage, error) {
+func (c *Client) ConnectWebSocket(ctx context.Context) (<-chan WSEvent, error) {
 	log := zerolog.Ctx(ctx)
 
 	wsURL, err := c.deriveWSURL()
@@ -212,7 +527,7 @@ func (c *Client) ConnectWebSocket(ctx context.Context) (<-chan WSMessage, error)
 		return nil, fmt.Errorf("WS dial: %w", err)
 	}
 
-	ch := make(chan WSMessage, 32)
+	ch := make(chan WSEvent, 32)
 	go func() {
 		defer close(ch)
 		defer conn.CloseNow()
@@ -223,24 +538,22 @@ func (c *Client) ConnectWebSocket(ctx context.Context) (<-chan WSMessage, error)
 			_, data, err := conn.Read(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
-					// Unexpected disconnect — log and let close(ch) signal the caller.
 					log.Err(err).Msg("TikTok IM WebSocket read error")
 				}
 				return
 			}
 
-			wsMsg, err := c.parseWSFrame(ctx, data)
+			evt, err := c.parseWSFrame(ctx, data)
 			if err != nil {
 				log.Warn().Err(err).Int("frame_bytes", len(data)).Msg("Failed to parse WS frame")
 				continue
 			}
-			if wsMsg == nil {
-				// Non-chat frame (heartbeat, ACK, etc.) — discard silently.
+			if evt == nil {
 				continue
 			}
 
 			select {
-			case ch <- *wsMsg:
+			case ch <- *evt:
 			case <-ctx.Done():
 				return
 			}
