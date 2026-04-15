@@ -21,6 +21,8 @@ const (
 
 	setPropertyPath    = "/v1/message/set_property"
 	setPropertyFullURL = "https://im-api-sg.tiktok.com/v1/message/set_property"
+
+	deleteMsgPath = "/v1/message/delete"
 )
 
 // SendMessageParams holds the parameters for sending a message.
@@ -285,6 +287,13 @@ type SendReactionParams struct {
 	ServerMessageID uint64
 }
 
+// DeleteMessageParams identifies a message to delete via POST /v1/message/delete.
+type DeleteMessageParams struct {
+	ConvID          string
+	ConvoSourceID   uint64
+	ServerMessageID uint64
+}
+
 // ---------------------------------------------------------------------------
 // Reaction protobuf payload
 // ---------------------------------------------------------------------------
@@ -335,6 +344,43 @@ func buildReactionPayload(p SendReactionParams, deviceID, msToken, verifyFP, pub
 						},
 					},
 				},
+			},
+		},
+	}
+
+	return mustMarshalProto(msg)
+}
+
+// buildDeletePayload constructs the protobuf request body for POST /v1/message/delete.
+//
+// Wire shape:
+//
+//	top-level (type 701 / sub-cmd 10007)
+//	  └─ field 8 → { field 701 → delete target }
+//	       field 1  conversation ID
+//	       field 2  source_id
+//	       field 3  1
+//	       field 4  server_message_id
+//	  └─ field 15  metadata (same style as inbox / get_by_conversation)
+func buildDeletePayload(convID string, sourceID, serverMsgID uint64, deviceID, msToken, verifyFP string) []byte {
+	msg := &tiktokpb.DeleteRequest{
+		MessageType:    protoUint64(701),
+		SubCommand:     protoUint64(10007),
+		ClientVersion:  protoString("1.6.0"),
+		Options:        emptyProtoMessage(),
+		PlatformFlag:   protoUint64(3),
+		Reserved_6:     protoUint64(0),
+		GitHash:        protoString(""),
+		DeviceId:       protoString(deviceID),
+		ClientPlatform: protoString("web"),
+		Metadata:       metadataKVsToProto(buildMetadata(deviceID, msToken, verifyFP)),
+		FinalFlag:      protoUint64(1),
+		Payload: &tiktokpb.DeleteRequestPayload{
+			Delete: &tiktokpb.DeleteMessageBody{
+				ConversationId:  protoString(convID),
+				SourceId:        protoUint64(sourceID),
+				Reserved_3:      protoUint64(1),
+				ServerMessageId: protoUint64(serverMsgID),
 			},
 		},
 	}
@@ -513,4 +559,48 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 	}
 
 	return &SendMessageResponse{MessageID: msgID}, nil
+}
+
+// DeleteMessage deletes a single chat message on TikTok's IM API.
+//
+// Unlike send and set_property, the web client posts to this endpoint with no
+// URL query parameters (no ztca-dpop / X-Bogus); authentication relies on the
+// session cookies already configured on the client.
+func (c *Client) DeleteMessage(ctx context.Context, p DeleteMessageParams) error {
+	cookie := c.rIA.Header.Get("Cookie")
+
+	universalData, err := c.getMessagesUniversalData()
+	if err != nil {
+		return fmt.Errorf("get universal data: %w", err)
+	}
+	appContext, err := universalData.getAppContext()
+	if err != nil {
+		return fmt.Errorf("get appContext: %w", err)
+	}
+	deviceID, ok := appContext["wid"].(string)
+	if !ok {
+		return fmt.Errorf("wid not found in appContext")
+	}
+
+	msToken := extractCookie(cookie, "msToken")
+	verifyFP := extractCookie(cookie, "s_v_web_id")
+
+	payload := buildDeletePayload(p.ConvID, p.ConvoSourceID, p.ServerMessageID, deviceID, msToken, verifyFP)
+
+	resp, err := c.rIA.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/x-protobuf").
+		SetHeader("Content-Type", "application/x-protobuf").
+		SetHeader("Cache-Control", "no-cache").
+		SetHeader("Origin", "https://www.tiktok.com").
+		SetBody(payload).
+		Post(deleteMsgPath)
+	if err != nil {
+		return fmt.Errorf("POST delete message: %w", err)
+	}
+	if resp.IsError() {
+		return fmt.Errorf("delete message API returned %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	return nil
 }

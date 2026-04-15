@@ -264,6 +264,49 @@ message SendResponseBody {
   optional string message_id = 1;
 }
 
+// Common REST request envelope for the type-701 message-delete call.
+//
+// POST /v1/message/delete — observed without URL query parameters (unlike send
+// and set_property, which attach ztca-dpop and related query keys).
+message DeleteRequest {
+  // 701 = delete message.
+  optional uint64 message_type = 1;
+  // Observed as 10007 for delete (same sub-command as send in current traffic).
+  optional uint64 sub_command = 2;
+  optional string client_version = 3;
+  optional EmptyMessage options = 4;
+  optional uint64 platform_flag = 5;
+  optional uint64 reserved_6 = 6;
+  // Present in some web captures; left empty when unknown.
+  optional string git_hash = 7;
+  optional DeleteRequestPayload payload = 8;
+  optional string device_id = 9;
+  optional string client_platform = 11;
+  repeated MetadataKV metadata = 15;
+  optional uint64 final_flag = 18;
+}
+
+// Typed payload wrapper for the type-701 request envelope.
+message DeleteRequestPayload {
+  optional DeleteMessageBody delete = 701;
+}
+
+// Inner body for POST /v1/message/delete (field 8 → 701).
+message DeleteMessageBody {
+  optional string conversation_id = 1;
+  // Conversation source_id from the inbox / conversation row.
+  optional uint64 source_id = 2;
+  // Observed as 1 in current traffic; semantics not fully confirmed.
+  optional uint64 reserved_3 = 3;
+  // Server-assigned message ID (same as ConversationMessageEntry.server_message_id).
+  optional uint64 server_message_id = 4;
+}
+
+// Delete response: only the outer status code is modeled for now.
+message DeleteMessageResponse {
+  optional uint64 status = 1;
+}
+
 // Common REST request envelope for the type-705 reaction mutation call.
 message ReactionRequest {
   // 705 = set_property / reaction mutation.
