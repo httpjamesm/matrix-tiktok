@@ -51,6 +51,7 @@ func newTikTokClient(connector *TikTokConnector, userLogin *bridgev2.UserLogin, 
 var _ bridgev2.NetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.ReactionHandlingNetworkAPI = (*TikTokClient)(nil)
+var _ bridgev2.RedactionHandlingNetworkAPI = (*TikTokClient)(nil)
 
 // ────────────────────────────────────────────────────────────────────────────
 // Connection lifecycle
@@ -454,6 +455,9 @@ func (tc *TikTokClient) IsThisUser(_ context.Context, userID networkid.UserID) b
 func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *event.RoomFeatures {
 	return &event.RoomFeatures{
 		MaxTextLength: 1000,
+		// Beeper uses com.beeper.room_features; without this, delete/unsend stays hidden
+		// even when RedactionHandlingNetworkAPI is implemented.
+		Delete: event.CapLevelFullySupported,
 	}
 }
 
@@ -574,6 +578,41 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 			SenderID: makeUserID(tc.meta.UserID),
 		},
 	}, nil
+}
+
+// HandleMatrixMessageRemove deletes the message on TikTok when the redacted
+// Matrix event corresponds to a message we sent. Other messages are left
+// untouched on TikTok (Matrix redaction still completes on the bridge side).
+func (tc *TikTokClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
+	if msg.TargetMessage == nil {
+		return fmt.Errorf("nil redaction target message")
+	}
+	if msg.TargetMessage.SenderID != makeUserID(tc.meta.UserID) {
+		zerolog.Ctx(ctx).Debug().
+			Str("target_sender", string(msg.TargetMessage.SenderID)).
+			Msg("Skipping TikTok delete: redacted message was not sent by this login")
+		return nil
+	}
+
+	serverMessageID, err := strconv.ParseUint(string(msg.TargetMessage.ID), 10, 64)
+	if err != nil {
+		return fmt.Errorf("cannot delete on TikTok: bridged message id %q is not a numeric server message id: %w", msg.TargetMessage.ID, err)
+	}
+
+	conv, err := tc.getConversationForPortal(ctx, msg.Portal)
+	if err != nil {
+		return err
+	}
+
+	err = tc.apiClient.DeleteMessage(ctx, libtiktok.DeleteMessageParams{
+		ConvID:          conv.ID,
+		ConvoSourceID:   conv.SourceID,
+		ServerMessageID: serverMessageID,
+	})
+	if err != nil {
+		return fmt.Errorf("delete TikTok message: %w", err)
+	}
+	return nil
 }
 
 // PreHandleMatrixReaction extracts the Matrix reaction key and maps it to the
