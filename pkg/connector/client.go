@@ -177,8 +177,16 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 					Int("modifications", len(r.Modifications)).
 					Msg("WS event: reaction property update")
 				tc.dispatchWSReaction(evt.Reaction)
+			case evt.Deletion != nil:
+				d := evt.Deletion
+				log.Info().
+					Str("conv_id", d.ConversationID).
+					Uint64("deleted_message_id", d.DeletedMessageID).
+					Str("deleter_user_id", d.DeleterUserID).
+					Msg("WS event: message deleted on TikTok")
+				tc.dispatchWSMessageDeletion(d)
 			default:
-				log.Warn().Msg("WS event: received event with nil Message and nil Reaction")
+				log.Warn().Msg("WS event: received event with nil Message, Reaction, and Deletion")
 			}
 		}
 
@@ -440,6 +448,42 @@ func (tc *TikTokClient) dispatchWSReaction(evt *libtiktok.WSReactionEvent) {
 			Emoji:         mod.Emoji,
 		})
 	}
+}
+
+// dispatchWSMessageDeletion redacts the bridged Matrix event when a message is
+// removed on TikTok (WS content_json command_type=2).
+func (tc *TikTokClient) dispatchWSMessageDeletion(d *libtiktok.WSMessageDeletion) {
+	deleterUID := d.DeleterUserID
+	if deleterUID == "" {
+		deleterUID = tc.meta.UserID
+	}
+	msgID := networkid.MessageID(strconv.FormatUint(d.DeletedMessageID, 10))
+	ts := time.UnixMilli(d.TimestampMs)
+	if d.TimestampMs == 0 {
+		ts = time.Now()
+	}
+	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.MessageRemove{
+		EventMeta: simplevent.EventMeta{
+			Type: bridgev2.RemoteEventMessageRemove,
+			LogContext: func(c zerolog.Context) zerolog.Context {
+				return c.
+					Str("conversation_id", d.ConversationID).
+					Uint64("deleted_message_id", d.DeletedMessageID).
+					Str("deleter_user_id", deleterUID)
+			},
+			PortalKey: networkid.PortalKey{
+				ID:       makePortalID(d.ConversationID),
+				Receiver: tc.userLogin.ID,
+			},
+			Sender: bridgev2.EventSender{
+				IsFromMe: deleterUID == tc.meta.UserID,
+				Sender:   makeUserID(deleterUID),
+			},
+			Timestamp: ts,
+		},
+		TargetMessage: msgID,
+		OnlyForMe:     false,
+	})
 }
 
 // ────────────────────────────────────────────────────────────────────────────

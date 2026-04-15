@@ -20,10 +20,11 @@ import (
 )
 
 // WSEvent is the unit of communication between libtiktok and the connector
-// layer. Exactly one of Message or Reaction is non-nil.
+// layer. At most one of Message, Reaction, or Deletion is non-nil.
 type WSEvent struct {
 	Message  *WSMessage
 	Reaction *WSReactionEvent
+	Deletion *WSMessageDeletion
 }
 
 // WSMessage carries a single inbound chat event.
@@ -44,6 +45,15 @@ type WSReactionEvent struct {
 type ReactionModification struct {
 	Op    int    // 0 = add, 1 = remove
 	Emoji string // raw emoji character(s), e.g. "❤️"
+}
+
+// WSMessageDeletion is a type-500 WebSocket payload where content_json carries
+// command_type=2 (message unsend/delete on the TikTok side).
+type WSMessageDeletion struct {
+	ConversationID   string
+	DeletedMessageID uint64 // TikTok server message id of the removed message
+	DeleterUserID    string // numeric TikTok user id from the WS detail, if present
+	TimestampMs      int64
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -207,6 +217,60 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSEvent, error
 	}
 }
 
+// wsContentCommandJSON is a non-chat command envelope in
+// WebsocketMessageDetail.content_json (distinct from aweType message bodies).
+type wsContentCommandJSON struct {
+	CommandType    int    `json:"command_type"`
+	ConversationID string `json:"conversation_id"`
+	MessageID      uint64 `json:"message_id"`
+}
+
+// TikTok uses command_type=2 in WS content_json for message delete/unsend.
+const wsContentCommandDelete = 2
+
+// tryParseWSMessageDeletion returns handled=true when content_json is a delete
+// command. If handled and the returned *WSEvent is nil, the payload was
+// malformed and the frame must not be interpreted as a normal chat message.
+func tryParseWSMessageDeletion(chat *tiktokpb.WebsocketChat, detail *tiktokpb.WebsocketMessageDetail) (handled bool, evt *WSEvent) {
+	if detail == nil {
+		return false, nil
+	}
+	content := detail.GetContentJson()
+	if len(content) == 0 {
+		return false, nil
+	}
+	var cmd wsContentCommandJSON
+	if err := json.Unmarshal(content, &cmd); err != nil {
+		return false, nil
+	}
+	if cmd.CommandType != wsContentCommandDelete {
+		return false, nil
+	}
+	if cmd.MessageID == 0 {
+		return true, nil
+	}
+	convID := cmd.ConversationID
+	if convID == "" && chat != nil {
+		convID = chat.GetConversationId()
+	}
+	if convID == "" {
+		return true, nil
+	}
+	deleter := ""
+	if uid := detail.GetSenderUserId(); uid != 0 {
+		deleter = strconv.FormatUint(uid, 10)
+	}
+	tsMs := int64(detail.GetTimestampUs() / 1000)
+	return true, &WSEvent{
+		Deletion: &WSMessageDeletion{
+			ConversationID:   convID,
+			DeletedMessageID: cmd.MessageID,
+			DeleterUserID:    deleter,
+			TimestampMs:      tsMs,
+		},
+	}
+}
+
 // parseChatEvent handles inner_type 500, which carries both regular chat
 // messages and property updates (reactions). If the detail tags contain
 // s:property_modify, the frame is a reaction event, not a chat message.
@@ -232,6 +296,20 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 	// disguised as a type-500 frame, not a real chat message.
 	if evt := c.tryParseReactionFromTags(ctx, convID, detail.GetTags()); evt != nil {
 		return evt, nil
+	}
+
+	if handled, delEvt := tryParseWSMessageDeletion(chat, detail); handled {
+		if delEvt != nil {
+			log.Debug().
+				Str("conv_id", delEvt.Deletion.ConversationID).
+				Uint64("deleted_message_id", delEvt.Deletion.DeletedMessageID).
+				Msg("WS 500: message deletion command")
+			return delEvt, nil
+		}
+		log.Warn().
+			Str("conv_id", convID).
+			Msg("WS 500: message delete command (command_type=2) missing conversation_id or message_id — dropping frame")
+		return nil, nil
 	}
 
 	numericMsgID := detail.GetServerMessageId()
@@ -499,7 +577,8 @@ func deduplicateModifications(ops []propertyModifyOp) []ReactionModification {
 //
 // Each binary frame is first decoded through the LZ4 outer envelope (field 6
 // = "__lz4" triggers block decompression of field 8), then the inner protobuf
-// is parsed and dispatched by inner_type (500 = chat, 705 = property update).
+// is parsed and dispatched by inner_type (500 = chat / delete command, 705 =
+// property update).
 //
 // The caller owns the channel lifetime: it is closed when ctx is cancelled or
 // the server closes the connection, which is the signal the connector uses to

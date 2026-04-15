@@ -469,11 +469,16 @@ message WebsocketChat {
 //
 // This is close to ConversationMessageEntry but not identical: reactions are
 // delivered through different WS events, so they are not modeled here.
+//
+// content_json is usually a chat body (aweType, text, …) but can instead be a
+// command envelope, e.g. {"command_type":2,"conversation_id":"…",
+// "message_id":<uint64>,…} for an unsend/delete notification (message_id is the
+// deleted server message id).
 message WebsocketMessageDetail {
   optional uint64 server_message_id = 3;
   optional uint64 timestamp_us = 4;
   optional uint64 sender_user_id = 7;
-  // JSON message blob parsed separately by parseMessageContent.
+  // JSON message blob parsed separately by parseMessageContent or command handlers.
   optional bytes content_json = 8;
   // Repeated tag pairs; s:client_message_id is used as the stable message key.
   repeated MetadataTag tags = 9;
