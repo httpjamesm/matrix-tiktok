@@ -416,8 +416,8 @@ func showConversation(
 		if len(state.messages) == 0 {
 			fmt.Println("  (no messages)")
 		} else {
-			for _, m := range state.messages {
-				fmt.Println(fmtMessage(m, selfID))
+			for i, m := range state.messages {
+				fmt.Printf("  %3d. %s\n", i+1, strings.TrimPrefix(fmtMessage(m, selfID), "  "))
 			}
 		}
 
@@ -429,7 +429,7 @@ func showConversation(
 		if state.nextCursor != "" {
 			cmds = append(cmds, "[l]oad more")
 		}
-		cmds = append(cmds, "[s]end", "[b]ack", "[q]uit")
+		cmds = append(cmds, "[s]end", "[r]eact", "[b]ack", "[q]uit")
 		fmt.Printf("  %s\n", strings.Join(cmds, "   "))
 
 		input := strings.ToLower(readLine(r, "  > "))
@@ -483,6 +483,60 @@ func showConversation(
 			}
 			state.messages = fresh
 			state.nextCursor = newCursor
+
+		case "r", "react":
+			if len(state.messages) == 0 {
+				fmt.Println("\n  No messages to react to.")
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			fmt.Println()
+			numStr := readLine(r, fmt.Sprintf("  Message number [1-%d] (empty to cancel): ", len(state.messages)))
+			if numStr == "" {
+				continue
+			}
+			n, err := strconv.Atoi(numStr)
+			if err != nil || n < 1 || n > len(state.messages) {
+				fmt.Printf("\n  Invalid message number %q.\n", numStr)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			target := state.messages[n-1]
+
+			emoji := readLine(r, "  Emoji to react with (empty to cancel): ")
+			if emoji == "" {
+				continue
+			}
+
+			actionStr := strings.ToLower(readLine(r, "  [a]dd or [r]emove reaction: "))
+			var action libtiktok.ReactionAction
+			switch actionStr {
+			case "a", "add":
+				action = libtiktok.ReactionAdd
+			case "r", "remove":
+				action = libtiktok.ReactionRemove
+			default:
+				fmt.Printf("\n  Unknown action %q — use 'a' or 'r'.\n", actionStr)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+
+			fmt.Println("  Sending reaction…")
+			err = client.SendReaction(ctx, libtiktok.SendReactionParams{
+				ConvID:          conv.ID,
+				Emoji:           emoji,
+				Action:          action,
+				SelfUserID:      selfID,
+				ConvoSourceID:   conv.SourceID,
+				ServerMessageID: target.ServerID,
+			})
+			if err != nil {
+				fmt.Printf("  Error: %v\n", err)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			fmt.Printf("  Reaction sent! (target message ID: %d)\n", target.ServerID)
+			readLine(r, "  Press Enter to continue… ")
 		}
 	}
 }

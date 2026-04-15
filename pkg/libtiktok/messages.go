@@ -17,6 +17,9 @@ import (
 const (
 	sendMsgPath    = "/v1/message/send"
 	sendMsgFullURL = "https://im-api-sg.tiktok.com/v1/message/send"
+
+	setPropertyPath    = "/v1/message/set_property"
+	setPropertyFullURL = "https://im-api-sg.tiktok.com/v1/message/set_property"
 )
 
 // SendMessageParams holds the parameters for sending a message.
@@ -296,6 +299,186 @@ func parseSendResponse(body []byte) (string, error) {
 // ---------------------------------------------------------------------------
 // SendMessage
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Reaction types
+// ---------------------------------------------------------------------------
+
+// ReactionAction indicates whether to add or remove a reaction.
+type ReactionAction uint64
+
+const (
+	// ReactionAdd adds the emoji reaction to a message.
+	ReactionAdd ReactionAction = 0
+	// ReactionRemove removes the emoji reaction from a message.
+	ReactionRemove ReactionAction = 1
+)
+
+// SendReactionParams holds the parameters for reacting to a message.
+type SendReactionParams struct {
+	// ConvID is the conversation ID (e.g. "0:1:X:Y").
+	ConvID string
+	// Emoji is the raw emoji character to react with; the "e:" prefix is added
+	// internally. Example: "❤️"
+	Emoji string
+	// Action is ReactionAdd or ReactionRemove.
+	Action ReactionAction
+	// SelfUserID is the numeric user ID of the person sending the reaction.
+	SelfUserID      string
+	ConvoSourceID   uint64
+	ServerMessageID uint64
+}
+
+// ---------------------------------------------------------------------------
+// Reaction protobuf payload
+// ---------------------------------------------------------------------------
+
+// buildReactionPayload constructs the protobuf request body for
+// POST /v1/message/set_property.
+//
+// Wire shape (field numbers mirror the captured typedef):
+//
+//	top-level (type 705 / sub-cmd 10008)
+//	  └─ field 8 → { field 705 → reaction wrapper }
+//	       field 1  → inner reaction message
+//	           field 1  conversation ID
+//	           field 2  1 (action flag)
+//	           field 3  ConvoSourceID
+//	           field 4  ServerMessageID
+//	           field 5  s:client_message_id UUID
+//	           field 6  repeated reaction entry { 1:action  2:"e:<emoji>"  4:userID }
+//	       field 2  "deprecated"
+//	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
+func buildReactionPayload(p SendReactionParams, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string) []byte {
+	// Reaction entry: {1: action, 2: "e:<emoji>", 4: userID}
+	var reactionEntry []byte
+	reactionEntry = append(reactionEntry, pbVarintField(1, uint64(p.Action))...)
+	reactionEntry = append(reactionEntry, pbStringField(2, "e:"+p.Emoji)...)
+	reactionEntry = append(reactionEntry, pbStringField(4, p.SelfUserID)...)
+
+	// Inner reaction message (8→705→1).
+	var inner []byte
+	inner = append(inner, pbStringField(1, p.ConvID)...)
+	inner = append(inner, pbVarintField(2, 1)...)
+	inner = append(inner, pbVarintField(3, p.ConvoSourceID)...)
+	inner = append(inner, pbVarintField(4, p.ServerMessageID)...)
+
+	inner = append(inner, pbStringField(5, clientMsgID)...)
+	inner = append(inner, pbEmbedField(6, reactionEntry)...)
+
+	// Reaction wrapper (8→705): { 1: inner, 2: "deprecated" }
+	var wrapper []byte
+	wrapper = append(wrapper, pbEmbedField(1, inner)...)
+	wrapper = append(wrapper, pbStringField(2, "deprecated")...)
+
+	// Field 8: { 705: wrapper }
+	field8Content := pbEmbedField(705, wrapper)
+
+	// Metadata key-value pairs (field 15, repeated).
+	var metaBytes []byte
+	for _, kv := range buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64) {
+		var pair []byte
+		pair = append(pair, pbStringField(1, kv.k)...)
+		pair = append(pair, pbStringField(2, kv.v)...)
+		metaBytes = append(metaBytes, pbEmbedField(15, pair)...)
+	}
+
+	// Top-level envelope — message type 705, sub-command 10008.
+	var msg []byte
+	msg = append(msg, pbVarintField(1, 705)...)
+	msg = append(msg, pbVarintField(2, 10008)...)
+	msg = append(msg, pbStringField(3, "1.6.0")...)
+	msg = append(msg, pbEmbedField(4, nil)...)
+	msg = append(msg, pbVarintField(5, 3)...)
+	msg = append(msg, pbVarintField(6, 0)...)
+	msg = append(msg, pbStringField(7, "")...)
+	msg = append(msg, pbEmbedField(8, field8Content)...)
+	msg = append(msg, pbStringField(9, deviceID)...)
+	msg = append(msg, pbStringField(11, "web")...)
+	msg = append(msg, metaBytes...)
+	msg = append(msg, pbVarintField(18, 1)...)
+	return msg
+}
+
+// ---------------------------------------------------------------------------
+// SendReaction
+// ---------------------------------------------------------------------------
+
+// SendReaction adds or removes an emoji reaction on a message.
+//
+// Protocol summary:
+//  1. Fetch the device ID (wid) from /messages universal data.
+//  2. Generate a fresh P-256 keypair for tt-ticket-guard.
+//  3. Build a DPoP proof JWT (ES256) bound to POST setPropertyFullURL.
+//  4. Construct the type-705 protobuf request body.
+//  5. POST to /v1/message/set_property with ztca-dpop in the query string.
+func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
+	cookie := c.rIA.Header.Get("Cookie")
+
+	universalData, err := c.getMessagesUniversalData()
+	if err != nil {
+		return fmt.Errorf("get universal data: %w", err)
+	}
+	appContext, err := universalData.getAppContext()
+	if err != nil {
+		return fmt.Errorf("get appContext: %w", err)
+	}
+	deviceID, ok := appContext["wid"].(string)
+	if !ok {
+		return fmt.Errorf("wid not found in appContext")
+	}
+
+	msToken := extractCookie(cookie, "msToken")
+	verifyFP := extractCookie(cookie, "s_v_web_id")
+
+	priv, err := generateP256Key()
+	if err != nil {
+		return fmt.Errorf("generate P-256 key: %w", err)
+	}
+	publicKeyB64 := base64.StdEncoding.EncodeToString(p256UncompressedPoint(priv))
+
+	dpopToken, err := buildDPoPJWT(priv, "POST", setPropertyFullURL)
+	if err != nil {
+		return fmt.Errorf("build DPoP JWT: %w", err)
+	}
+
+	clientMsgID := uuid.New().String()
+
+	payload := buildReactionPayload(p, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID)
+
+	resp, err := c.rIA.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/x-protobuf").
+		SetHeader("Content-Type", "application/x-protobuf").
+		SetHeader("Cache-Control", "no-cache").
+		SetHeader("Origin", "https://www.tiktok.com").
+		SetHeader("Pragma", "no-cache").
+		SetHeader("Priority", "u=1, i").
+		SetHeader("tt-ticket-guard-iteration-version", "0").
+		SetHeader("tt-ticket-guard-public-key", publicKeyB64).
+		SetHeader("tt-ticket-guard-version", "2").
+		SetHeader("tt-ticket-guard-web-version", "1").
+		SetQueryParams(map[string]string{
+			"aid":             imAID,
+			"version_code":    "1.0.0",
+			"app_name":        "tiktok_web",
+			"device_platform": "web_pc",
+			"ztca-version":    "1",
+			"ztca-dpop":       dpopToken,
+			"msToken":         msToken,
+			"X-Bogus":         randomBogus(),
+		}).
+		SetBody(payload).
+		Post(setPropertyPath)
+	if err != nil {
+		return fmt.Errorf("POST set_property: %w", err)
+	}
+	if resp.IsError() {
+		return fmt.Errorf("set_property API returned %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	return nil
+}
 
 // SendMessage sends a text message to the specified conversation and returns the
 // acknowledged message ID.

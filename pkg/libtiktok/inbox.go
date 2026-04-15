@@ -6,23 +6,26 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/rs/zerolog"
 )
 
 type Conversation struct {
 	ID           string   // 0:1:X:Y
-	SourceID     string   // 5: from get_by_user_init
+	SourceID     uint64   // 5: from get_by_user_init
 	Participants []string // user IDs
 }
 
 type Message struct {
-	ID          string
-	ConvID      string
-	SenderID    string
-	Type        string // "text", "image", "video", "sticker"
-	Text        string
-	MediaURL    string
-	MimeType    string
-	TimestampMs int64
+	ServerID        uint64
+	ConvID          string
+	ClientMessageID string
+	SenderID        string
+	Type            string // "text", "image", "video", "sticker"
+	Text            string
+	MediaURL        string
+	MimeType        string
+	TimestampMs     int64
 }
 
 const (
@@ -144,7 +147,11 @@ func pbDecode(data []byte) (protoMsg, error) {
 			msg[fieldNum] = append(msg[fieldNum], protoField{isVarint: true, u: uint64(v)})
 
 		default:
-			return nil, fmt.Errorf("unknown wire type %d for field %d", wireType, fieldNum)
+			// Unknown wire type — we cannot determine the field's length, so
+			// we cannot safely advance past it.  Return the fields decoded so
+			// far; callers only read low-numbered fields (1, 6, 8, …) which
+			// will already be present before any high-numbered exotic field.
+			return msg, nil
 		}
 	}
 	return msg, nil
@@ -252,6 +259,10 @@ func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (m
 	default:
 		msgType = fmt.Sprintf("type_%d", int(aweTypeF))
 		text, _ = content["text"].(string)
+		zerolog.Ctx(ctx).Warn().
+			Int("awe_type", int(aweTypeF)).
+			RawJSON("content", contentBytes).
+			Msg("Received TikTok message with unrecognised aweType — please open an issue")
 	}
 	return
 }
@@ -362,7 +373,7 @@ func parseConversationEntry(raw []byte) (Conversation, error) {
 	}
 
 	convID := msgGetString(entry, 1)
-	sourceID := strconv.FormatUint(msgGetUint(entry, 5), 10)
+	sourceID := msgGetUint(entry, 5)
 
 	// convID format: "0:1:<userA>:<userB>" — take the last two colon-separated segments
 	parts := strings.Split(convID, ":")
@@ -503,14 +514,13 @@ func (c *Client) GetInbox(ctx context.Context) ([]Conversation, error) {
 // for the get_by_conversation endpoint. sourceID is the uint64 from field 5 of
 // the conversation entry (Conversation.SourceID); cursorTsUs is the microsecond
 // timestamp cursor from field 25 of the last seen message (0 for the first page).
-func buildGetByConversationPayload(deviceID, msToken, verifyFP, convID, sourceID string, count int, cursorTsUs uint64) []byte {
-	sourceIDUint, _ := strconv.ParseUint(sourceID, 10, 64)
+func buildGetByConversationPayload(deviceID, msToken, verifyFP, convID string, sourceID uint64, count int, cursorTsUs uint64) []byte {
 
 	// inner payload: field 8 → 301
 	var inner301 []byte
 	inner301 = append(inner301, pbStringField(1, convID)...)        // conversation_id
 	inner301 = append(inner301, pbVarintField(2, 1)...)             // direction (1 = fetch latest)
-	inner301 = append(inner301, pbVarintField(3, sourceIDUint)...)  // sourceID — routes to correct conversation
+	inner301 = append(inner301, pbVarintField(3, sourceID)...)      // sourceID — routes to correct conversation
 	inner301 = append(inner301, pbVarintField(4, 1)...)             // flag
 	inner301 = append(inner301, pbVarintField(5, cursorTsUs)...)    // cursor timestamp (µs)
 	inner301 = append(inner301, pbVarintField(6, uint64(count))...) // message count
@@ -556,19 +566,22 @@ func parseMessageEntry(ctx context.Context, c *Client, raw []byte) (Message, uin
 	tsMicros := msgGetUint(entry, 4)
 	cursorTs := msgGetUint(entry, 25) // field 25: pagination timestamp cursor
 
+	serverID := msgGetUint(entry, 3)
+
 	msgID := extractClientMsgID(entry)
 
 	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, msgGetBytes(entry, 8))
 
 	return Message{
-		ID:          msgID,
-		ConvID:      convID,
-		SenderID:    senderID,
-		Type:        msgType,
-		Text:        text,
-		MediaURL:    mediaURL,
-		MimeType:    mimeType,
-		TimestampMs: int64(tsMicros) / 1000,
+		ServerID:        serverID,
+		ClientMessageID: msgID,
+		ConvID:          convID,
+		SenderID:        senderID,
+		Type:            msgType,
+		Text:            text,
+		MediaURL:        mediaURL,
+		MimeType:        mimeType,
+		TimestampMs:     int64(tsMicros) / 1000,
 	}, cursorTs, nil
 }
 

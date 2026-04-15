@@ -201,7 +201,7 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 		log.Info().
 			Str("conv_id", conv.ID).
 			Strs("participants", conv.Participants).
-			Str("source_id", conv.SourceID).
+			Uint64("source_id", conv.SourceID).
 			Msg("Processing conversation")
 
 		// Identify the other participant and cache them for GetChatInfo.
@@ -239,7 +239,7 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 		for _, msg := range msgs {
 			log.Info().
 				Str("conv_id", conv.ID).
-				Str("msg_id", msg.ID).
+				Uint64("msg_id", msg.ServerID).
 				Str("sender_id", msg.SenderID).
 				Str("type", msg.Type).
 				Int64("ts_ms", msg.TimestampMs).
@@ -280,7 +280,7 @@ func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtik
 			LogContext: func(c zerolog.Context) zerolog.Context {
 				return c.
 					Str("conversation_id", conv.ID).
-					Str("message_id", msg.ID).
+					Uint64("message_id", msg.ServerID).
 					Str("sender_id", msg.SenderID)
 			},
 			PortalKey: networkid.PortalKey{
@@ -294,7 +294,7 @@ func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtik
 			},
 			Timestamp: time.UnixMilli(msg.TimestampMs),
 		},
-		ID:                 networkid.MessageID(msg.ID),
+		ID:                 networkid.MessageID(msg.ServerID),
 		Data:               msg,
 		ConvertMessageFunc: tc.convertMessage,
 	})

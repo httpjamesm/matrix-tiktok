@@ -122,7 +122,17 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 	}
 
 	// Only inner type 500 carries a chat message.
-	if msgGetUint(env, 1) != 500 {
+	innerType := msgGetUint(env, 1)
+	if innerType != 500 {
+		if innerType != 0 {
+			// Non-zero inner types are real events we don't handle yet
+			// (e.g. reactions, typing indicators).  Log them at debug so
+			// they can be identified and implemented later.
+			zerolog.Ctx(ctx).Debug().
+				Uint64("inner_type", innerType).
+				Int("frame_bytes", len(data)).
+				Msg("Unhandled WS inner type — skipping")
+		}
 		return nil, nil
 	}
 
@@ -170,21 +180,19 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSMessage, err
 	// deduplication aligns perfectly with messages fetched via the REST API,
 	// which also uses this UUID as its primary key.
 	msgID := extractClientMsgID(detail)
-	if msgID == "" {
-		msgID = strconv.FormatUint(numericMsgID, 10)
-	}
 
 	// ── JSON content ─────────────────────────────────────────────────────────
 	msgType, text, mediaURL, _ := parseMessageContent(ctx, c, msgGetBytes(detail, 8))
 
 	msg := Message{
-		ID:          msgID,
-		ConvID:      convID,
-		SenderID:    senderID,
-		Type:        msgType,
-		Text:        text,
-		MediaURL:    mediaURL,
-		TimestampMs: tsUs / 1000, // µs → ms
+		ServerID:        numericMsgID,
+		ClientMessageID: msgID,
+		ConvID:          convID,
+		SenderID:        senderID,
+		Type:            msgType,
+		Text:            text,
+		MediaURL:        mediaURL,
+		TimestampMs:     tsUs / 1000, // µs → ms
 	}
 	conv := Conversation{
 		ID: convID,
