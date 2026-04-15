@@ -117,8 +117,18 @@ func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (m
 	if len(contentBytes) == 0 {
 		return
 	}
-	var content map[string]any
-	if err := json.Unmarshal(contentBytes, &content); err != nil {
+	content, err := parseContentJSONObject(contentBytes)
+	if err != nil {
+		return
+	}
+	if stickerURL, stickerText, ok := parseStickerFromContentJSON(content, contentBytes); ok {
+		msgType = "sticker"
+		text = stickerText
+		mediaURL = stickerURL
+		mimeType = guessStickerMIMEFromURL(stickerURL)
+		if text == "" {
+			text = "[sticker]"
+		}
 		return
 	}
 	aweTypeF, _ := content["aweType"].(float64)
@@ -387,6 +397,12 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 	msgID := extractClientMsgIDFromTags(entry.GetTags())
 	contentJSON := entry.GetContentJson()
 	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, contentJSON)
+	if stickerURL, stickerText, stickerMIME, ok := parseStickerFromConversationEntryProto(entry); ok {
+		msgType = "sticker"
+		text = stickerText
+		mediaURL = stickerURL
+		mimeType = stickerMIME
+	}
 	replyTo := uint64(0)
 	replyQuoted := ""
 	if ref := entry.GetMessageReply(); ref != nil {

@@ -67,16 +67,27 @@ func (c *Client) DownloadVideo(ctx context.Context, videoURL string) ([]byte, st
 		return nil, "", fmt.Errorf("play URL %s returned HTTP %d", playURL, mediaResp.StatusCode())
 	}
 
-	mime := mediaResp.Header().Get("Content-Type")
-	if mime == "" {
-		mime = "video/mp4"
-	}
-	// Strip parameters like "; charset=utf-8".
-	if idx := strings.Index(mime, ";"); idx != -1 {
-		mime = strings.TrimSpace(mime[:idx])
-	}
+	mime := normalizeContentType(mediaResp.Header().Get("Content-Type"), "video/mp4")
 
 	return mediaResp.Body(), mime, nil
+}
+
+// DownloadSticker fetches a signed TikTok DM sticker asset directly from the
+// CDN URL embedded in the message payload and returns the raw bytes plus MIME
+// type. The URLs are already signed, so no TikTok session cookies are needed.
+func (c *Client) DownloadSticker(ctx context.Context, stickerURL string) ([]byte, string, error) {
+	resp, err := newScraperClient().R().
+		SetContext(ctx).
+		SetHeader("Referer", "https://www.tiktok.com/").
+		Get(stickerURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("download sticker %s: %w", stickerURL, err)
+	}
+	if resp.IsError() {
+		return nil, "", fmt.Errorf("sticker URL %s returned HTTP %d", stickerURL, resp.StatusCode())
+	}
+
+	return resp.Body(), normalizeContentType(resp.Header().Get("Content-Type"), guessStickerMIMEFromURL(stickerURL)), nil
 }
 
 // extractVideoPlayAddr navigates the parsed __DEFAULT_SCOPE__ map returned by
@@ -179,4 +190,17 @@ func responseCookiesToString(cookies []*http.Cookie) string {
 		parts = append(parts, c.Name+"="+c.Value)
 	}
 	return strings.Join(parts, "; ")
+}
+
+func normalizeContentType(contentType, fallback string) string {
+	if contentType == "" {
+		return fallback
+	}
+	if idx := strings.Index(contentType, ";"); idx != -1 {
+		contentType = strings.TrimSpace(contentType[:idx])
+	}
+	if contentType == "" {
+		return fallback
+	}
+	return contentType
 }

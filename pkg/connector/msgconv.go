@@ -41,6 +41,8 @@ func (tc *TikTokClient) convertMessage(
 	switch msg.Type {
 	case "text":
 		return tc.convertTextMessage(ctx, portal, msg), nil
+	case "sticker":
+		return tc.convertStickerMessage(ctx, portal, intent, msg)
 	case "video":
 		return tc.convertVideoMessage(ctx, portal, intent, msg)
 	default:
@@ -48,6 +50,72 @@ func (tc *TikTokClient) convertMessage(
 		// notice so the user knows something arrived even if we can't render it.
 		return convertUnknownMessage(msg), nil
 	}
+}
+
+// convertStickerMessage downloads a TikTok DM sticker from the signed CDN URL
+// carried in the message payload and uploads it to Matrix as an m.image event.
+// If the sticker cannot be fetched, it falls back to a small text notice.
+func (tc *TikTokClient) convertStickerMessage(
+	ctx context.Context,
+	portal *bridgev2.Portal,
+	intent bridgev2.MatrixAPI,
+	msg libtiktok.Message,
+) (*bridgev2.ConvertedMessage, error) {
+	log := zerolog.Ctx(ctx)
+
+	if msg.MediaURL == "" {
+		return convertStickerFallback(msg), nil
+	}
+
+	data, mime, err := tc.apiClient.DownloadSticker(ctx, msg.MediaURL)
+	if err != nil {
+		log.Warn().Err(err).Str("url", msg.MediaURL).
+			Msg("Failed to download TikTok sticker; falling back to text")
+		return convertStickerFallback(msg), nil
+	}
+
+	fileName := stickerFileName(mime)
+	size := int64(len(data))
+	content := &event.MessageEventContent{
+		MsgType: event.MsgImage,
+		Body:    fileName,
+		Info: &event.FileInfo{
+			MimeType: mime,
+			Size:     int(size),
+		},
+	}
+
+	mxcURL, encFile, err := intent.UploadMediaStream(
+		ctx,
+		portal.MXID,
+		size,
+		false,
+		func(dest io.Writer) (*bridgev2.FileStreamResult, error) {
+			if _, err := dest.Write(data); err != nil {
+				return nil, err
+			}
+			return &bridgev2.FileStreamResult{
+				FileName: fileName,
+				MimeType: mime,
+			}, nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("upload sticker to Matrix: %w", err)
+	}
+
+	content.URL = mxcURL
+	content.File = encFile
+
+	return &bridgev2.ConvertedMessage{
+		Parts: []*bridgev2.ConvertedMessagePart{
+			{
+				Type:       event.EventMessage,
+				Content:    content,
+				DBMetadata: messageMetaFromLib(msg),
+			},
+		},
+	}, nil
 }
 
 // convertTextMessage converts a plain-text TikTok DM. For replies (ReplyToServerID), it sets
@@ -247,6 +315,32 @@ func convertVideoFallback(msg libtiktok.Message) *bridgev2.ConvertedMessage {
 	}
 }
 
+// convertStickerFallback renders a sticker as a plain-text notice when the
+// CDN asset could not be downloaded or the payload was missing a usable URL.
+func convertStickerFallback(msg libtiktok.Message) *bridgev2.ConvertedMessage {
+	body := msg.Text
+	if body == "" {
+		body = "[sticker]"
+	}
+	if msg.MediaURL != "" {
+		body += "\n" + msg.MediaURL
+	}
+
+	meta := messageMetaFromLib(msg)
+	return &bridgev2.ConvertedMessage{
+		Parts: []*bridgev2.ConvertedMessagePart{
+			{
+				Type: event.EventMessage,
+				Content: &event.MessageEventContent{
+					MsgType: event.MsgNotice,
+					Body:    body,
+				},
+				DBMetadata: meta,
+			},
+		},
+	}
+}
+
 // convertUnknownMessage produces a fallback m.notice for message types that
 // libtiktok does not yet decode (images, stickers, likes, reactions, etc.).
 func convertUnknownMessage(msg libtiktok.Message) *bridgev2.ConvertedMessage {
@@ -296,5 +390,18 @@ func msgTypeAndName(mime string) (event.MessageType, string) {
 		return event.MsgVideo, "video.mov"
 	default:
 		return event.MsgVideo, "video.mp4"
+	}
+}
+
+func stickerFileName(mime string) string {
+	switch mime {
+	case "image/png":
+		return "sticker.png"
+	case "image/gif":
+		return "sticker.gif"
+	case "image/jpeg":
+		return "sticker.jpg"
+	default:
+		return "sticker.webp"
 	}
 }

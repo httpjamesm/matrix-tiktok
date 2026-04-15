@@ -185,6 +185,52 @@ message MessageReplyReference {
   optional uint64 refmsg_sender_user_id = 7;
 }
 
+// Localized string wrapper used in several sticker preview text slots.
+message LocalizedText {
+  optional string text = 1;
+}
+
+// Dimensions attached to a sticker asset.
+message StickerAssetSize {
+  optional uint64 width = 1;
+  optional uint64 height = 2;
+}
+
+// Primary downloadable sticker asset.
+message StickerAsset {
+  // Internal CDN object path.
+  optional string path = 1;
+  // Signed absolute URL for fetching the sticker media.
+  optional string url = 2;
+  optional StickerAssetSize size = 5;
+  optional uint64 reserved_7 = 7;
+}
+
+// Human-readable preview strings that accompany a sticker message.
+//
+// Captures commonly show:
+// - field 2: "sent a sticker" / localized equivalent
+// - field 3: "[sticker]" / localized equivalent
+// field 1 exists too, but its semantics are less clear, so we keep a
+// conservative name here.
+message StickerDisplayTexts {
+  optional LocalizedText reserved_1 = 1;
+  optional LocalizedText sent_a_sticker = 2;
+  optional LocalizedText bracketed_sticker = 3;
+}
+
+// Sticker-specific section nested under the outer message row's field 20.
+message StickerMessagePayload {
+  optional StickerAsset asset = 1;
+  optional StickerDisplayTexts display_texts = 2;
+}
+
+// Outer message attachment container. Field 7 carries sticker payloads in the
+// captures observed so far.
+message MessageAttachmentPayload {
+  optional StickerMessagePayload sticker = 7;
+}
+
 // Minimal subset of a conversation message entry currently used by the bridge.
 message ConversationMessageEntry {
   optional string conversation_id = 1;
@@ -206,6 +252,10 @@ message ConversationMessageEntry {
   repeated ReactionSummary reactions = 15;
   // When present, this message is a reply; field 1 targets the parent server_message_id.
   optional MessageReplyReference message_reply = 18;
+  // Outer attachment payload; field 7 currently carries sticker metadata.
+  optional MessageAttachmentPayload attachment = 20;
+  // Observed as "sticker" for sticker messages.
+  optional string message_subtype = 21;
   // Pagination cursor carried on the entry; callers use the last one returned.
   optional uint64 cursor_ts_us = 25;
 }
@@ -515,6 +565,10 @@ message WebsocketMessageDetail {
   optional string sender_sec_uid = 14;
   // Same shape as ConversationMessageEntry.message_reply (reply / quote).
   optional MessageReplyReference message_reply = 18;
+  // Outer attachment payload; field 7 currently carries sticker metadata.
+  optional MessageAttachmentPayload attachment = 20;
+  // Observed as "sticker" for sticker messages.
+  optional string message_subtype = 21;
   optional uint64 cursor_ts_us = 25;
 }
 

@@ -183,6 +183,7 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 					Str("conv_id", d.ConversationID).
 					Uint64("deleted_message_id", d.DeletedMessageID).
 					Str("deleter_user_id", d.DeleterUserID).
+					Bool("only_for_me", d.OnlyForMe).
 					Msg("WS event: message deleted on TikTok")
 				tc.dispatchWSMessageDeletion(d)
 			default:
@@ -451,7 +452,7 @@ func (tc *TikTokClient) dispatchWSReaction(evt *libtiktok.WSReactionEvent) {
 }
 
 // dispatchWSMessageDeletion redacts the bridged Matrix event when a message is
-// removed on TikTok (WS content_json command_type=2).
+// removed on TikTok, either as a local hide/delete-for-self or a global recall.
 func (tc *TikTokClient) dispatchWSMessageDeletion(d *libtiktok.WSMessageDeletion) {
 	deleterUID := d.DeleterUserID
 	if deleterUID == "" {
@@ -482,7 +483,7 @@ func (tc *TikTokClient) dispatchWSMessageDeletion(d *libtiktok.WSMessageDeletion
 			Timestamp: ts,
 		},
 		TargetMessage: msgID,
-		OnlyForMe:     false,
+		OnlyForMe:     d.OnlyForMe,
 	})
 }
 

@@ -47,13 +47,15 @@ type ReactionModification struct {
 	Emoji string // raw emoji character(s), e.g. "❤️"
 }
 
-// WSMessageDeletion is a type-500 WebSocket payload where content_json carries
-// command_type=2 (message unsend/delete on the TikTok side).
+// WSMessageDeletion is a type-500 WebSocket payload describing either:
+// - a local hide/delete-for-self command (`content_json.command_type=2`)
+// - a global recall/delete-for-everybody event (`s:recall_uid` tag shape)
 type WSMessageDeletion struct {
 	ConversationID   string
 	DeletedMessageID uint64 // TikTok server message id of the removed message
 	DeleterUserID    string // numeric TikTok user id from the WS detail, if present
 	TimestampMs      int64
+	OnlyForMe        bool
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -225,13 +227,13 @@ type wsContentCommandJSON struct {
 	MessageID      uint64 `json:"message_id"`
 }
 
-// TikTok uses command_type=2 in WS content_json for message delete/unsend.
+// TikTok uses command_type=2 in WS content_json for delete-for-self.
 const wsContentCommandDelete = 2
 
-// tryParseWSMessageDeletion returns handled=true when content_json is a delete
-// command. If handled and the returned *WSEvent is nil, the payload was
-// malformed and the frame must not be interpreted as a normal chat message.
-func tryParseWSMessageDeletion(chat *tiktokpb.WebsocketChat, detail *tiktokpb.WebsocketMessageDetail) (handled bool, evt *WSEvent) {
+// tryParseWSDeleteForSelf returns handled=true when content_json is a local
+// delete/hide command. If handled and the returned *WSEvent is nil, the payload
+// was malformed and the frame must not be interpreted as a normal chat message.
+func tryParseWSDeleteForSelf(chat *tiktokpb.WebsocketChat, detail *tiktokpb.WebsocketMessageDetail) (handled bool, evt *WSEvent) {
 	if detail == nil {
 		return false, nil
 	}
@@ -267,6 +269,54 @@ func tryParseWSMessageDeletion(chat *tiktokpb.WebsocketChat, detail *tiktokpb.We
 			DeletedMessageID: cmd.MessageID,
 			DeleterUserID:    deleter,
 			TimestampMs:      tsMs,
+			OnlyForMe:        true,
+		},
+	}
+}
+
+// tryParseWSDeleteForEveryone returns handled=true when the tag list matches
+// the recall/delete-for-everybody event shape. If handled and the returned
+// *WSEvent is nil, the frame is malformed and must not be interpreted as a
+// normal chat message.
+func tryParseWSDeleteForEveryone(chat *tiktokpb.WebsocketChat, detail *tiktokpb.WebsocketMessageDetail) (handled bool, evt *WSEvent) {
+	if chat == nil || detail == nil {
+		return false, nil
+	}
+
+	convID := chat.GetConversationId()
+	if convID == "" {
+		return false, nil
+	}
+
+	var deletedMsgID uint64
+	var deleter string
+	hasRecallUID := false
+	for _, tag := range detail.GetTags() {
+		switch tag.GetKey() {
+		case "s:recall_uid":
+			hasRecallUID = true
+			deleter = string(tag.GetValue())
+		case "s:server_message_id":
+			deletedMsgID, _ = strconv.ParseUint(string(tag.GetValue()), 10, 64)
+		}
+	}
+	if !hasRecallUID {
+		return false, nil
+	}
+	if deletedMsgID == 0 {
+		return true, nil
+	}
+	if deleter == "" && detail.GetSenderUserId() != 0 {
+		deleter = strconv.FormatUint(detail.GetSenderUserId(), 10)
+	}
+
+	return true, &WSEvent{
+		Deletion: &WSMessageDeletion{
+			ConversationID:   convID,
+			DeletedMessageID: deletedMsgID,
+			DeleterUserID:    deleter,
+			TimestampMs:      int64(detail.GetTimestampUs() / 1000),
+			OnlyForMe:        false,
 		},
 	}
 }
@@ -298,17 +348,33 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 		return evt, nil
 	}
 
-	if handled, delEvt := tryParseWSMessageDeletion(chat, detail); handled {
+	if handled, delEvt := tryParseWSDeleteForEveryone(chat, detail); handled {
 		if delEvt != nil {
 			log.Debug().
 				Str("conv_id", delEvt.Deletion.ConversationID).
 				Uint64("deleted_message_id", delEvt.Deletion.DeletedMessageID).
-				Msg("WS 500: message deletion command")
+				Bool("only_for_me", delEvt.Deletion.OnlyForMe).
+				Msg("WS 500: message recall/delete-for-everyone event")
 			return delEvt, nil
 		}
 		log.Warn().
 			Str("conv_id", convID).
-			Msg("WS 500: message delete command (command_type=2) missing conversation_id or message_id — dropping frame")
+			Msg("WS 500: message recall event missing target message ID — dropping frame")
+		return nil, nil
+	}
+
+	if handled, delEvt := tryParseWSDeleteForSelf(chat, detail); handled {
+		if delEvt != nil {
+			log.Debug().
+				Str("conv_id", delEvt.Deletion.ConversationID).
+				Uint64("deleted_message_id", delEvt.Deletion.DeletedMessageID).
+				Bool("only_for_me", delEvt.Deletion.OnlyForMe).
+				Msg("WS 500: message delete-for-self command")
+			return delEvt, nil
+		}
+		log.Warn().
+			Str("conv_id", convID).
+			Msg("WS 500: message delete-for-self command (command_type=2) missing conversation_id or message_id — dropping frame")
 		return nil, nil
 	}
 
@@ -317,7 +383,13 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 	senderID := strconv.FormatUint(detail.GetSenderUserId(), 10)
 	msgID := extractClientMsgIDFromTags(detail.GetTags())
 	wsContent := detail.GetContentJson()
-	msgType, text, mediaURL, _ := parseMessageContent(ctx, c, wsContent)
+	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, wsContent)
+	if stickerURL, stickerText, stickerMIME, ok := parseStickerFromWebsocketDetailProto(detail); ok {
+		msgType = "sticker"
+		text = stickerText
+		mediaURL = stickerURL
+		mimeType = stickerMIME
+	}
 	replyTo := uint64(0)
 	replyQuoted := ""
 	if ref := detail.GetMessageReply(); ref != nil {
@@ -344,6 +416,7 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 		Type:            msgType,
 		Text:            text,
 		MediaURL:        mediaURL,
+		MimeType:        mimeType,
 		TimestampMs:     tsUs / 1000,
 		ReplyToServerID: replyTo,
 		ReplyQuotedText: replyQuoted,

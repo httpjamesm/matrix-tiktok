@@ -6,7 +6,7 @@ import (
 	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
 )
 
-func TestTryParseWSMessageDeletion(t *testing.T) {
+func TestTryParseWSDeleteForSelf(t *testing.T) {
 	// Synthetic IDs only — message_id is >2^53 to assert JSON→uint64 does not
 	// go through float64 and lose precision.
 	const (
@@ -27,7 +27,7 @@ func TestTryParseWSMessageDeletion(t *testing.T) {
 		SenderUserId: protoUint64(senderUID),
 	}
 
-	handled, evt := tryParseWSMessageDeletion(chat, detail)
+	handled, evt := tryParseWSDeleteForSelf(chat, detail)
 	if !handled || evt == nil || evt.Deletion == nil {
 		t.Fatalf("expected deletion event, got handled=%v evt=%v", handled, evt)
 	}
@@ -44,14 +44,17 @@ func TestTryParseWSMessageDeletion(t *testing.T) {
 	if d.TimestampMs != wantTsMs {
 		t.Fatalf("TimestampMs: got %d want %d", d.TimestampMs, wantTsMs)
 	}
+	if !d.OnlyForMe {
+		t.Fatal("expected OnlyForMe=true")
+	}
 }
 
-func TestTryParseWSMessageDeletionFallsBackToChatConvID(t *testing.T) {
+func TestTryParseWSDeleteForSelfFallsBackToChatConvID(t *testing.T) {
 	jsonBody := `{"command_type":2,"message_id":42}`
 	chat := &tiktokpb.WebsocketChat{ConversationId: protoString("0:1:a:b")}
 	detail := &tiktokpb.WebsocketMessageDetail{ContentJson: []byte(jsonBody)}
 
-	handled, evt := tryParseWSMessageDeletion(chat, detail)
+	handled, evt := tryParseWSDeleteForSelf(chat, detail)
 	if !handled || evt == nil || evt.Deletion == nil {
 		t.Fatal("expected deletion")
 	}
@@ -60,12 +63,59 @@ func TestTryParseWSMessageDeletionFallsBackToChatConvID(t *testing.T) {
 	}
 }
 
-func TestTryParseWSMessageDeletionNotACommand(t *testing.T) {
+func TestTryParseWSDeleteForSelfNotACommand(t *testing.T) {
 	detail := &tiktokpb.WebsocketMessageDetail{
 		ContentJson: []byte(`{"aweType":700,"text":"hi"}`),
 	}
-	handled, evt := tryParseWSMessageDeletion(&tiktokpb.WebsocketChat{}, detail)
+	handled, evt := tryParseWSDeleteForSelf(&tiktokpb.WebsocketChat{}, detail)
 	if handled || evt != nil {
 		t.Fatalf("expected not handled, got handled=%v evt=%v", handled, evt)
+	}
+}
+
+func TestTryParseWSDeleteForEveryone(t *testing.T) {
+	const (
+		convID       = "0:1:1111111111111111111:2222222222222222222"
+		deletedMsgID = uint64(7628835564771083797)
+		recallUID    = "1111111111111111111"
+		senderUID    = uint64(1111111111111111111)
+		tsUs         = uint64(1776226702263000)
+		wantTsMs     = int64(1776226702263)
+	)
+
+	chat := &tiktokpb.WebsocketChat{
+		ConversationId: protoString(convID),
+	}
+	detail := &tiktokpb.WebsocketMessageDetail{
+		ServerMessageId: protoUint64(7628835586388461575), // wrapper event message ID, not the recalled target
+		TimestampUs:     protoUint64(tsUs),
+		SenderUserId:    protoUint64(senderUID),
+		Tags: []*tiktokpb.MetadataTag{
+			{Key: protoString("s:client_message_id"), Value: []byte("2a0cecfb-d01c-4b6c-b9b4-381ecdd905a4")},
+			{Key: protoString("a:disable_outer_push"), Value: []byte("1")},
+			{Key: protoString("s:server_message_id"), Value: []byte("7628835564771083797")},
+			{Key: protoString("s:recall_uid"), Value: []byte(recallUID)},
+		},
+	}
+
+	handled, evt := tryParseWSDeleteForEveryone(chat, detail)
+	if !handled || evt == nil || evt.Deletion == nil {
+		t.Fatalf("expected delete-for-everyone event, got handled=%v evt=%v", handled, evt)
+	}
+	d := evt.Deletion
+	if d.ConversationID != convID {
+		t.Fatalf("ConversationID: got %q", d.ConversationID)
+	}
+	if d.DeletedMessageID != deletedMsgID {
+		t.Fatalf("DeletedMessageID: got %d want %d", d.DeletedMessageID, deletedMsgID)
+	}
+	if d.DeleterUserID != recallUID {
+		t.Fatalf("DeleterUserID: got %q want %q", d.DeleterUserID, recallUID)
+	}
+	if d.TimestampMs != wantTsMs {
+		t.Fatalf("TimestampMs: got %d want %d", d.TimestampMs, wantTsMs)
+	}
+	if d.OnlyForMe {
+		t.Fatal("expected OnlyForMe=false")
 	}
 }
