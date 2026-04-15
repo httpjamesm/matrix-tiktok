@@ -3,11 +3,17 @@ package connector
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
+	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 )
@@ -24,7 +30,7 @@ func (tc *TikTokClient) convertMessage(
 ) (*bridgev2.ConvertedMessage, error) {
 	switch msg.Type {
 	case "text":
-		return convertTextMessage(msg), nil
+		return tc.convertTextMessage(ctx, portal, msg), nil
 	case "video":
 		return tc.convertVideoMessage(ctx, portal, intent, msg)
 	default:
@@ -34,19 +40,81 @@ func (tc *TikTokClient) convertMessage(
 	}
 }
 
-// convertTextMessage converts a plain-text TikTok DM.
-func convertTextMessage(msg libtiktok.Message) *bridgev2.ConvertedMessage {
-	return &bridgev2.ConvertedMessage{
+// convertTextMessage converts a plain-text TikTok DM. For replies (ReplyToServerID), it sets
+// ConvertedMessage.ReplyTo so bridgev2 can attach m.relates_to, and when the parent message
+// is already in the bridge DB it adds Matrix rich-reply fallbacks (plain + mx-reply HTML)
+// so clients render the quote UI reliably.
+func (*TikTokClient) convertTextMessage(ctx context.Context, portal *bridgev2.Portal, msg libtiktok.Message) *bridgev2.ConvertedMessage {
+	content := &event.MessageEventContent{
+		MsgType: event.MsgText,
+		Body:    msg.Text,
+	}
+	cm := &bridgev2.ConvertedMessage{
 		Parts: []*bridgev2.ConvertedMessagePart{
-			{
-				Type: event.EventMessage,
-				Content: &event.MessageEventContent{
-					MsgType: event.MsgText,
-					Body:    msg.Text,
-				},
-			},
+			{Type: event.EventMessage, Content: content},
 		},
 	}
+	if msg.ReplyToServerID == 0 {
+		return cm
+	}
+	parentRemoteID := networkid.MessageID(strconv.FormatUint(msg.ReplyToServerID, 10))
+	cm.ReplyTo = &networkid.MessageOptionalPartID{MessageID: parentRemoteID}
+
+	if portal == nil {
+		return cm
+	}
+	parent, err := portal.Bridge.DB.Message.GetFirstPartByID(ctx, portal.Receiver, parentRemoteID)
+	if err != nil || parent == nil || parent.MXID == "" {
+		return cm
+	}
+
+	quoted := strings.TrimSpace(msg.ReplyQuotedText)
+	if quoted == "" {
+		quoted = "…"
+	}
+	replyPlain := msg.Text
+
+	var plainQuote string
+	if parent.SenderMXID != "" {
+		plainQuote = fmt.Sprintf("> <%s> %s", parent.SenderMXID, quoted)
+	} else {
+		plainQuote = "> " + quoted
+	}
+	content.Body = plainQuote + "\n\n" + replyPlain
+
+	eventPermalink := matrixToPermalinkRoomEvent(portal.MXID, parent.MXID)
+	var formatted strings.Builder
+	formatted.WriteString(`<mx-reply><blockquote>`)
+	if parent.SenderMXID != "" {
+		userPermalink := matrixToPermalinkUser(parent.SenderMXID)
+		fmt.Fprintf(&formatted, `<a href="%s">In reply to</a> <a href="%s">%s</a><br>`,
+			html.EscapeString(eventPermalink),
+			html.EscapeString(userPermalink),
+			html.EscapeString(string(parent.SenderMXID)),
+		)
+	} else {
+		fmt.Fprintf(&formatted, `<a href="%s">In reply to a message</a><br>`,
+			html.EscapeString(eventPermalink),
+		)
+	}
+	formatted.WriteString(event.TextToHTML(quoted))
+	formatted.WriteString(`</blockquote></mx-reply>`)
+	formatted.WriteString(event.TextToHTML(replyPlain))
+
+	content.Format = event.FormatHTML
+	content.FormattedBody = formatted.String()
+	return cm
+}
+
+func matrixToPermalinkRoomEvent(roomID id.RoomID, eventID id.EventID) string {
+	return fmt.Sprintf("https://matrix.to/#/%s/%s",
+		url.PathEscape(string(roomID)),
+		url.PathEscape(string(eventID)),
+	)
+}
+
+func matrixToPermalinkUser(userID id.UserID) string {
+	return fmt.Sprintf("https://matrix.to/#/%s", url.PathEscape(string(userID)))
 }
 
 // convertVideoMessage downloads a shared TikTok video and uploads it to Matrix

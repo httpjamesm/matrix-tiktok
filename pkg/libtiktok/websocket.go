@@ -317,13 +317,22 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 	senderID := strconv.FormatUint(detail.GetSenderUserId(), 10)
 	msgID := extractClientMsgIDFromTags(detail.GetTags())
 	msgType, text, mediaURL, _ := parseMessageContent(ctx, c, detail.GetContentJson())
+	replyTo := uint64(0)
+	replyQuoted := ""
+	if ref := detail.GetMessageReply(); ref != nil {
+		replyTo = ref.GetReferencedServerMessageId()
+		replyQuoted = parseReplyQuotedTextFromWire(ref.GetQuotedContextJson())
+	}
 
-	log.Debug().
+	dbg := log.Debug().
 		Str("conv_id", convID).
 		Str("sender_id", senderID).
 		Str("msg_type", msgType).
-		Uint64("server_msg_id", numericMsgID).
-		Msg("WS 500: chat message")
+		Uint64("server_msg_id", numericMsgID)
+	if replyTo != 0 {
+		dbg = dbg.Uint64("reply_to_server_msg_id", replyTo)
+	}
+	dbg.Msg("WS 500: chat message")
 
 	msg := Message{
 		ServerID:        numericMsgID,
@@ -334,6 +343,8 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 		Text:            text,
 		MediaURL:        mediaURL,
 		TimestampMs:     tsUs / 1000,
+		ReplyToServerID: replyTo,
+		ReplyQuotedText: replyQuoted,
 	}
 	conv := Conversation{
 		ID:           convID,

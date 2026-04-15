@@ -28,6 +28,10 @@ type Message struct {
 	MimeType        string
 	TimestampMs     int64
 	Reactions       []Reaction
+	// ReplyToServerID is the parent message's server_message_id when this DM is a reply (aweType 703).
+	ReplyToServerID uint64
+	// ReplyQuotedText is a short plain-text preview of the parent message from message_reply (field 2 JSON), when present.
+	ReplyQuotedText string
 }
 
 // Reaction represents a single emoji reaction on a message and the users who sent it.
@@ -99,6 +103,7 @@ func deduplicateReactions(in []Reaction) []Reaction {
 // Known aweType values:
 //
 //	0, 700 → "text"  (REST API uses 0; WebSocket push uses 700)
+//	703    → "text"  (reply; same text field; parent id is protobuf message_reply, field 1)
 //	800    → "video" (shared TikTok post)
 func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (msgType, text, mediaURL, mimeType string) {
 	if len(contentBytes) == 0 {
@@ -110,7 +115,7 @@ func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (m
 	}
 	aweTypeF, _ := content["aweType"].(float64)
 	switch int(aweTypeF) {
-	case 0, 700:
+	case 0, 700, 703:
 		msgType = "text"
 		text, _ = content["text"].(string)
 	case 800:
@@ -132,6 +137,35 @@ func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (m
 			Msg("Received TikTok message with unrecognised aweType — please open an issue")
 	}
 	return
+}
+
+// parseReplyQuotedTextFromWire extracts the inner chat "text" from TikTok's message_reply
+// quoted_context_json blob (field 2): outer JSON with refmsg_content / content holding a nested JSON body.
+func parseReplyQuotedTextFromWire(quotedContextJSON []byte) string {
+	if len(quotedContextJSON) == 0 {
+		return ""
+	}
+	var outer struct {
+		Content       string `json:"content"`
+		RefmsgContent string `json:"refmsg_content"`
+	}
+	if err := json.Unmarshal(quotedContextJSON, &outer); err != nil {
+		return ""
+	}
+	raw := outer.RefmsgContent
+	if raw == "" {
+		raw = outer.Content
+	}
+	if raw == "" {
+		return ""
+	}
+	var inner struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(raw), &inner); err != nil {
+		return ""
+	}
+	return inner.Text
 }
 
 type metaKV struct{ k, v string }
@@ -344,6 +378,12 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 	serverID := entry.GetServerMessageId()
 	msgID := extractClientMsgIDFromTags(entry.GetTags())
 	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, entry.GetContentJson())
+	replyTo := uint64(0)
+	replyQuoted := ""
+	if ref := entry.GetMessageReply(); ref != nil {
+		replyTo = ref.GetReferencedServerMessageId()
+		replyQuoted = parseReplyQuotedTextFromWire(ref.GetQuotedContextJson())
+	}
 
 	return Message{
 		ServerID:        serverID,
@@ -356,6 +396,8 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 		MimeType:        mimeType,
 		TimestampMs:     int64(tsMicros) / 1000,
 		Reactions:       parseReactionsProto(entry.GetReactions()),
+		ReplyToServerID: replyTo,
+		ReplyQuotedText: replyQuoted,
 	}, cursorTs, nil
 }
 

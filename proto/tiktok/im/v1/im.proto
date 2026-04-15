@@ -171,6 +171,20 @@ message ConversationMessageList {
   repeated ConversationMessageEntry entries = 1;
 }
 
+// Reply / quote attachment (field 18) on chat message bodies.
+//
+// Observed when aweType=703 (reply): field 1 is the referenced message's
+// server_message_id; field 2 is a JSON object with refmsg_content, refmsg_uid,
+// refmsg_sec_uid, refmsg_type, etc. Fields 3, 4, 7 appear in captures but are
+// not fully interpreted here.
+message MessageReplyReference {
+  optional uint64 referenced_server_message_id = 1;
+  optional bytes quoted_context_json = 2;
+  optional uint64 refmsg_type = 3;
+  optional uint64 reserved_4 = 4;
+  optional uint64 refmsg_sender_user_id = 7;
+}
+
 // Minimal subset of a conversation message entry currently used by the bridge.
 message ConversationMessageEntry {
   optional string conversation_id = 1;
@@ -184,6 +198,8 @@ message ConversationMessageEntry {
   optional bytes content_json = 8;
   // Repeated message tags; s:client_message_id is the main one we use.
   repeated MetadataTag tags = 9;
+  // When present, this message is a reply; field 1 targets the parent server_message_id.
+  optional MessageReplyReference message_reply = 18;
   // Repeated reaction summaries attached to the message.
   repeated ReactionSummary reactions = 15;
   // Pagination cursor carried on the entry; callers use the last one returned.
@@ -482,6 +498,8 @@ message WebsocketMessageDetail {
   optional bytes content_json = 8;
   // Repeated tag pairs; s:client_message_id is used as the stable message key.
   repeated MetadataTag tags = 9;
+  // Same shape as ConversationMessageEntry.message_reply (reply / quote).
+  optional MessageReplyReference message_reply = 18;
 }
 
 // Property-update container carried by inner_type 705.
