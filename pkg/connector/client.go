@@ -502,6 +502,8 @@ func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *
 		// Beeper uses com.beeper.room_features; without this, delete/unsend stays hidden
 		// even when RedactionHandlingNetworkAPI is implemented.
 		Delete: event.CapLevelFullySupported,
+		// Rich replies (m.relates_to → TikTok aweType 703).
+		Reply: event.CapLevelFullySupported,
 	}
 }
 
@@ -603,14 +605,66 @@ func (tc *TikTokClient) fetchGhostAvatar(ctx context.Context, ghost *bridgev2.Gh
 
 // HandleMatrixMessage forwards a Matrix message to the TikTok conversation.
 func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
-	text, err := matrixToTikTok(msg.Content)
+	log := zerolog.Ctx(ctx)
+
+	content := *msg.Content
+	content.RemoveReplyFallback()
+
+	text, err := matrixToTikTok(&content)
 	if err != nil {
 		return nil, err
+	}
+
+	var reply *libtiktok.OutgoingMessageReply
+	if msg.ReplyTo != nil {
+		if msg.ReplyTo.Room == msg.Portal.PortalKey {
+			parentID, perr := strconv.ParseUint(string(msg.ReplyTo.ID), 10, 64)
+			if perr != nil {
+				log.Debug().Err(perr).Str("parent_id", string(msg.ReplyTo.ID)).
+					Msg("Matrix reply target is not a TikTok server message id; sending without TikTok reply envelope")
+			} else if parentID == 0 {
+				log.Debug().Str("parent_id", string(msg.ReplyTo.ID)).
+					Msg("Matrix reply target has zero id; sending without TikTok reply envelope")
+			} else {
+				var pm *MessageMetadata
+				if raw, ok := msg.ReplyTo.Metadata.(*MessageMetadata); ok {
+					pm = raw
+				}
+				refUID := string(msg.ReplyTo.SenderID)
+				refSec := ""
+				chainID := uint64(0)
+				cursorUs := uint64(0)
+				contentJSON := ""
+				if pm != nil {
+					refSec = pm.SenderSecUID
+					chainID = pm.SendChainID
+					cursorUs = pm.CursorTsUs
+					contentJSON = pm.ContentJSON
+				}
+				if cursorUs == 0 {
+					cursorUs = uint64(msg.ReplyTo.Timestamp.UnixMicro())
+				}
+				refBytes, rerr := libtiktok.BuildReplyReferenceJSON(contentJSON, refUID, refSec)
+				if rerr != nil {
+					log.Warn().Err(rerr).Msg("Failed to build TikTok reply reference JSON; sending as non-reply")
+				} else {
+					reply = &libtiktok.OutgoingMessageReply{
+						ParentServerMessageID: parentID,
+						ParentSendChainID:     chainID,
+						ParentCursorTsUs:      cursorUs,
+						ReferencePayloadJSON:  refBytes,
+					}
+				}
+			}
+		} else {
+			log.Debug().Msg("Matrix reply target is in another portal; sending without TikTok reply envelope")
+		}
 	}
 
 	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
 		ConvID: string(msg.Portal.ID),
 		Text:   text,
+		Reply:  reply,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("send TikTok message: %w", err)

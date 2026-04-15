@@ -32,6 +32,14 @@ type Message struct {
 	ReplyToServerID uint64
 	// ReplyQuotedText is a short plain-text preview of the parent message from message_reply (field 2 JSON), when present.
 	ReplyQuotedText string
+	// SendChainID is TikTok inner wire field 5; copy into send body field 3 when replying from Matrix.
+	SendChainID uint64
+	// SenderSecUID is the sender's sec_uid (wire field 14) for building outbound reply reference JSON.
+	SenderSecUID string
+	// CursorTsUs is field 25 on the wire row; used as parent_cursor_ts_us on outbound replies.
+	CursorTsUs uint64
+	// RawContentJSON is the original field-8 JSON body bytes (for round-tripping refmsg content on send).
+	RawContentJSON []byte
 }
 
 // Reaction represents a single emoji reaction on a message and the users who sent it.
@@ -377,13 +385,15 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 	cursorTs := entry.GetCursorTsUs()
 	serverID := entry.GetServerMessageId()
 	msgID := extractClientMsgIDFromTags(entry.GetTags())
-	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, entry.GetContentJson())
+	contentJSON := entry.GetContentJson()
+	msgType, text, mediaURL, mimeType := parseMessageContent(ctx, c, contentJSON)
 	replyTo := uint64(0)
 	replyQuoted := ""
 	if ref := entry.GetMessageReply(); ref != nil {
 		replyTo = ref.GetReferencedServerMessageId()
 		replyQuoted = parseReplyQuotedTextFromWire(ref.GetQuotedContextJson())
 	}
+	rawJSON := append([]byte(nil), contentJSON...)
 
 	return Message{
 		ServerID:        serverID,
@@ -398,6 +408,10 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 		Reactions:       parseReactionsProto(entry.GetReactions()),
 		ReplyToServerID: replyTo,
 		ReplyQuotedText: replyQuoted,
+		SendChainID:     entry.GetSendChainId(),
+		SenderSecUID:    entry.GetSenderSecUid(),
+		CursorTsUs:      entry.GetCursorTsUs(),
+		RawContentJSON:  rawJSON,
 	}, cursorTs, nil
 }
 

@@ -18,6 +18,16 @@ import (
 	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 )
 
+func messageMetaFromLib(msg libtiktok.Message) *MessageMetadata {
+	return &MessageMetadata{
+		MsgType:      msg.Type,
+		SendChainID:  msg.SendChainID,
+		SenderSecUID: msg.SenderSecUID,
+		CursorTsUs:   msg.CursorTsUs,
+		ContentJSON:  string(msg.RawContentJSON),
+	}
+}
+
 // convertMessage converts a libtiktok.Message into a bridgev2.ConvertedMessage
 // that the central bridge module will forward to the Matrix room.
 //
@@ -49,9 +59,10 @@ func (*TikTokClient) convertTextMessage(ctx context.Context, portal *bridgev2.Po
 		MsgType: event.MsgText,
 		Body:    msg.Text,
 	}
+	meta := messageMetaFromLib(msg)
 	cm := &bridgev2.ConvertedMessage{
 		Parts: []*bridgev2.ConvertedMessagePart{
-			{Type: event.EventMessage, Content: content},
+			{Type: event.EventMessage, Content: content, DBMetadata: meta},
 		},
 	}
 	if msg.ReplyToServerID == 0 {
@@ -186,11 +197,13 @@ func (tc *TikTokClient) convertVideoMessage(
 		linkBody = msg.Text + "\n" + msg.MediaURL
 	}
 
+	vmeta := messageMetaFromLib(msg)
 	return &bridgev2.ConvertedMessage{
 		Parts: []*bridgev2.ConvertedMessagePart{
 			{
-				Type:    event.EventMessage,
-				Content: content,
+				Type:       event.EventMessage,
+				Content:    content,
+				DBMetadata: vmeta,
 			},
 			{
 				Type: event.EventMessage,
@@ -200,6 +213,7 @@ func (tc *TikTokClient) convertVideoMessage(
 					Format:        event.FormatHTML,
 					FormattedBody: fmt.Sprintf(`<a href="%s">%s</a>`, msg.MediaURL, linkBody),
 				},
+				DBMetadata: vmeta,
 			},
 		},
 	}, nil
@@ -216,6 +230,7 @@ func convertVideoFallback(msg libtiktok.Message) *bridgev2.ConvertedMessage {
 		body = "[video]"
 	}
 
+	fmeta := messageMetaFromLib(msg)
 	return &bridgev2.ConvertedMessage{
 		Parts: []*bridgev2.ConvertedMessagePart{
 			{
@@ -226,6 +241,7 @@ func convertVideoFallback(msg libtiktok.Message) *bridgev2.ConvertedMessage {
 					Format:        event.FormatHTML,
 					FormattedBody: fmt.Sprintf(`<a href="%s">%s</a>`, msg.MediaURL, body),
 				},
+				DBMetadata: fmeta,
 			},
 		},
 	}
@@ -239,6 +255,7 @@ func convertUnknownMessage(msg libtiktok.Message) *bridgev2.ConvertedMessage {
 		body = fmt.Sprintf("[%s] %s", msg.Type, msg.Text)
 	}
 
+	umeta := messageMetaFromLib(msg)
 	return &bridgev2.ConvertedMessage{
 		Parts: []*bridgev2.ConvertedMessagePart{
 			{
@@ -247,14 +264,16 @@ func convertUnknownMessage(msg libtiktok.Message) *bridgev2.ConvertedMessage {
 					MsgType: event.MsgNotice,
 					Body:    body,
 				},
+				DBMetadata: umeta,
 			},
 		},
 	}
 }
 
 // matrixToTikTok converts the body of a Matrix message into the plain-text
-// string that TikTok's send API expects. Extend this as needed for formatted
-// bodies, replies, mentions, etc.
+// string that TikTok's send API expects. Callers should strip Matrix reply
+// fallbacks (e.g. content.RemoveReplyFallback()) before calling when the event
+// is a rich reply.
 func matrixToTikTok(content *event.MessageEventContent) (string, error) {
 	switch content.MsgType {
 	case event.MsgText, event.MsgNotice:

@@ -192,16 +192,20 @@ message ConversationMessageEntry {
   optional uint64 server_message_id = 3;
   // Message send timestamp in microseconds.
   optional uint64 timestamp_us = 4;
+  // Observed on inner chat rows; required as send body field 3 when posting a reply (aweType 703).
+  optional uint64 send_chain_id = 5;
   // Numeric sender user ID.
   optional uint64 sender_user_id = 7;
   // JSON message blob parsed separately by parseMessageContent.
   optional bytes content_json = 8;
   // Repeated message tags; s:client_message_id is the main one we use.
   repeated MetadataTag tags = 9;
-  // When present, this message is a reply; field 1 targets the parent server_message_id.
-  optional MessageReplyReference message_reply = 18;
+  // Sender sec_uid (TikTok stable user token string).
+  optional string sender_sec_uid = 14;
   // Repeated reaction summaries attached to the message.
   repeated ReactionSummary reactions = 15;
+  // When present, this message is a reply; field 1 targets the parent server_message_id.
+  optional MessageReplyReference message_reply = 18;
   // Pagination cursor carried on the entry; callers use the last one returned.
   optional uint64 cursor_ts_us = 25;
 }
@@ -244,6 +248,14 @@ message SendRequestPayload {
 // - field 6: 7
 // - field 7: "deprecated"
 // - field 8: client UUID echoed directly
+// - field 11: present on aweType=703 replies (parent ref + quoted JSON)
+message SendMessageReplyAttachment {
+  optional uint64 referenced_server_message_id = 1;
+  optional bytes reference_payload_json = 2;
+  optional uint64 duplicate_referenced_server_message_id = 3;
+  optional uint64 parent_cursor_ts_us = 4;
+}
+
 message SendMessageBody {
   optional string conversation_id = 1;
   optional uint64 message_kind = 2;
@@ -254,6 +266,7 @@ message SendMessageBody {
   optional string deprecated = 7;
   // Client-generated UUID v4 used for deduplication across REST and WS paths.
   optional string client_message_id = 8;
+  optional SendMessageReplyAttachment message_reply = 11;
 }
 
 // Send-message response envelope.
@@ -493,13 +506,16 @@ message WebsocketChat {
 message WebsocketMessageDetail {
   optional uint64 server_message_id = 3;
   optional uint64 timestamp_us = 4;
+  optional uint64 send_chain_id = 5;
   optional uint64 sender_user_id = 7;
   // JSON message blob parsed separately by parseMessageContent or command handlers.
   optional bytes content_json = 8;
   // Repeated tag pairs; s:client_message_id is used as the stable message key.
   repeated MetadataTag tags = 9;
+  optional string sender_sec_uid = 14;
   // Same shape as ConversationMessageEntry.message_reply (reply / quote).
   optional MessageReplyReference message_reply = 18;
+  optional uint64 cursor_ts_us = 25;
 }
 
 // Property-update container carried by inner_type 705.

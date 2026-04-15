@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,7 +30,36 @@ const (
 type SendMessageParams struct {
 	ConvID string
 	Text   string
+	// Reply, when non-nil, sends aweType 703 with protobuf field 11 (message_reply).
+	Reply *OutgoingMessageReply
 	// later: MediaData []byte, MimeType string, etc.
+}
+
+// OutgoingMessageReply carries the TikTok reply envelope for POST /v1/message/send.
+type OutgoingMessageReply struct {
+	ParentServerMessageID uint64
+	ParentSendChainID     uint64
+	ParentCursorTsUs      uint64
+	ReferencePayloadJSON  []byte
+}
+
+// BuildReplyReferenceJSON builds the JSON blob for SendMessageReplyAttachment.reference_payload_json
+// (refmsg_uid, refmsg_sec_uid, nested content, etc.), matching captures from TikTok web.
+func BuildReplyReferenceJSON(parentContentJSON, refmsgUID, refmsgSecUID string) ([]byte, error) {
+	inner := strings.TrimSpace(parentContentJSON)
+	if inner == "" {
+		inner = `{"aweType":0,"text":""}`
+	}
+	outer := map[string]any{
+		"content":                 inner,
+		"refmsg_content":          inner,
+		"refmsg_sec_uid":          refmsgSecUID,
+		"refmsg_type":             7,
+		"refmsg_uid":              refmsgUID,
+		"refmsg_sub_type":         "",
+		"refmsg_template_quote":   "",
+	}
+	return json.Marshal(outer)
 }
 
 // SendMessageResponse holds the result of a successful SendMessage call.
@@ -184,9 +214,35 @@ func buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64 string) []metaK
 //	       field 6  7
 //	       field 7  "deprecated"
 //	       field 8  client message UUID
+//	       field 11 message_reply when aweType=703 (reply)
 //	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
-func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string) []byte {
-	textJSON, _ := json.Marshal(map[string]any{"aweType": 0, "text": text})
+func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string, reply *OutgoingMessageReply) []byte {
+	sendBody := &tiktokpb.SendMessageBody{
+		ConversationId:  protoString(convID),
+		MessageKind:     protoUint64(1),
+		Reserved_3:      protoUint64(0),
+		Reserved_6:      protoUint64(7),
+		Deprecated:      protoString("deprecated"),
+		ClientMessageId: protoString(clientMsgID),
+		Tags: []*tiktokpb.MetadataTag{
+			{Key: protoString("s:mentioned_users"), Value: nil},
+			{Key: protoString("s:client_message_id"), Value: []byte(clientMsgID)},
+		},
+	}
+	var textJSON []byte
+	if reply != nil {
+		textJSON, _ = json.Marshal(map[string]any{"aweType": 703, "text": text})
+		sendBody.Reserved_3 = protoUint64(reply.ParentSendChainID)
+		sendBody.MessageReply = &tiktokpb.SendMessageReplyAttachment{
+			ReferencedServerMessageId:          protoUint64(reply.ParentServerMessageID),
+			ReferencePayloadJson:               reply.ReferencePayloadJSON,
+			DuplicateReferencedServerMessageId: protoUint64(reply.ParentServerMessageID),
+			ParentCursorTsUs:                   protoUint64(reply.ParentCursorTsUs),
+		}
+	} else {
+		textJSON, _ = json.Marshal(map[string]any{"aweType": 0, "text": text})
+	}
+	sendBody.ContentJson = textJSON
 
 	msg := &tiktokpb.SendRequest{
 		MessageType:    protoUint64(100),
@@ -201,19 +257,7 @@ func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, c
 		Metadata:       metadataKVsToProto(buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64)),
 		FinalFlag:      protoUint64(1),
 		Payload: &tiktokpb.SendRequestPayload{
-			Send: &tiktokpb.SendMessageBody{
-				ConversationId:  protoString(convID),
-				MessageKind:     protoUint64(1),
-				Reserved_3:      protoUint64(0),
-				ContentJson:     textJSON,
-				Reserved_6:      protoUint64(7),
-				Deprecated:      protoString("deprecated"),
-				ClientMessageId: protoString(clientMsgID),
-				Tags: []*tiktokpb.MetadataTag{
-					{Key: protoString("s:mentioned_users"), Value: nil},
-					{Key: protoString("s:client_message_id"), Value: []byte(clientMsgID)},
-				},
-			},
+			Send: sendBody,
 		},
 	}
 
@@ -516,7 +560,7 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 	// and field 8 of the inner message.
 	clientMsgID := uuid.New().String()
 
-	payload := buildSendPayload(p.ConvID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID)
+	payload := buildSendPayload(p.ConvID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID, p.Reply)
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).

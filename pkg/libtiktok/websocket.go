@@ -316,13 +316,15 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 	tsUs := int64(detail.GetTimestampUs())
 	senderID := strconv.FormatUint(detail.GetSenderUserId(), 10)
 	msgID := extractClientMsgIDFromTags(detail.GetTags())
-	msgType, text, mediaURL, _ := parseMessageContent(ctx, c, detail.GetContentJson())
+	wsContent := detail.GetContentJson()
+	msgType, text, mediaURL, _ := parseMessageContent(ctx, c, wsContent)
 	replyTo := uint64(0)
 	replyQuoted := ""
 	if ref := detail.GetMessageReply(); ref != nil {
 		replyTo = ref.GetReferencedServerMessageId()
 		replyQuoted = parseReplyQuotedTextFromWire(ref.GetQuotedContextJson())
 	}
+	rawJSON := append([]byte(nil), wsContent...)
 
 	dbg := log.Debug().
 		Str("conv_id", convID).
@@ -345,6 +347,10 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 		TimestampMs:     tsUs / 1000,
 		ReplyToServerID: replyTo,
 		ReplyQuotedText: replyQuoted,
+		SendChainID:     detail.GetSendChainId(),
+		SenderSecUID:    detail.GetSenderSecUid(),
+		CursorTsUs:      detail.GetCursorTsUs(),
+		RawContentJSON:  rawJSON,
 	}
 	conv := Conversation{
 		ID:           convID,

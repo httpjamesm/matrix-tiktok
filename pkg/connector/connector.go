@@ -46,7 +46,7 @@ func (tc *TikTokConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilitie
 // resend room-info / capability state events.  Increment the first value when
 // uk.half-shot.bridge changes, and the second when com.beeper.room_features changes.
 func (tc *TikTokConnector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 2 // bump capabilities when com.beeper.room_features changes
+	return 1, 3 // bump capabilities when com.beeper.room_features changes
 }
 
 // GetName returns static metadata that identifies this bridge to Matrix.
@@ -138,6 +138,37 @@ type PortalMetadata struct {
 type MessageMetadata struct {
 	// Original TikTok message type (e.g. "text", "image", "video", "sticker").
 	MsgType string `json:"msg_type,omitempty"`
+	// SendChainID is TikTok inner wire field 5; copied to send body field 3 for aweType 703 replies.
+	SendChainID uint64 `json:"send_chain_id,omitempty"`
+	// SenderSecUID is the message sender's sec_uid (wire field 14).
+	SenderSecUID string `json:"sender_sec_uid,omitempty"`
+	// CursorTsUs is wire field 25 (µs); used as parent_cursor_ts_us when replying from Matrix.
+	CursorTsUs uint64 `json:"cursor_ts_us,omitempty"`
+	// ContentJSON is the raw field-8 JSON body from TikTok (for refmsg content on outbound replies).
+	ContentJSON string `json:"content_json,omitempty"`
+}
+
+// CopyFrom merges non-zero fields from another MessageMetadata (used when merging media+caption parts).
+func (m *MessageMetadata) CopyFrom(other any) {
+	o, ok := other.(*MessageMetadata)
+	if !ok || o == nil || m == nil {
+		return
+	}
+	if o.MsgType != "" {
+		m.MsgType = o.MsgType
+	}
+	if o.SendChainID != 0 {
+		m.SendChainID = o.SendChainID
+	}
+	if o.SenderSecUID != "" {
+		m.SenderSecUID = o.SenderSecUID
+	}
+	if o.CursorTsUs != 0 {
+		m.CursorTsUs = o.CursorTsUs
+	}
+	if o.ContentJSON != "" {
+		m.ContentJSON = o.ContentJSON
+	}
 }
 
 // -----------------------------------------------------------------------
