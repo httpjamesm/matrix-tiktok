@@ -129,6 +129,9 @@ type UserLoginMetadata struct {
 type PortalMetadata struct {
 	// The TikTok conversation / inbox thread ID.
 	ConversationID string `json:"conversation_id,omitempty"`
+	// SourceID is the extra TikTok conversation identifier required by follow-up
+	// APIs like history fetch and message reactions.
+	SourceID uint64 `json:"source_id,omitempty"`
 }
 
 // MessageMetadata stores TikTok-specific data alongside each bridged message.

@@ -50,6 +50,7 @@ func newTikTokClient(connector *TikTokConnector, userLogin *bridgev2.UserLogin, 
 // Ensure TikTokClient fully implements the required interfaces.
 var _ bridgev2.NetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*TikTokClient)(nil)
+var _ bridgev2.ReactionHandlingNetworkAPI = (*TikTokClient)(nil)
 
 // ────────────────────────────────────────────────────────────────────────────
 // Connection lifecycle
@@ -499,6 +500,93 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	}, nil
 }
 
+// PreHandleMatrixReaction extracts the Matrix reaction key and maps it to the
+// current TikTok login so bridgev2 can deduplicate outgoing reactions.
+func (tc *TikTokClient) PreHandleMatrixReaction(_ context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
+	emoji := msg.Content.RelatesTo.GetAnnotationKey()
+	if emoji == "" {
+		return bridgev2.MatrixReactionPreResponse{}, fmt.Errorf("missing Matrix reaction annotation key")
+	}
+
+	return bridgev2.MatrixReactionPreResponse{
+		SenderID: makeUserID(tc.meta.UserID),
+		EmojiID:  networkid.EmojiID(emoji),
+		Emoji:    emoji,
+	}, nil
+}
+
+// HandleMatrixReaction forwards a Matrix reaction to TikTok using the existing
+// add-reaction API.
+func (tc *TikTokClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (*database.Reaction, error) {
+	serverMessageID, err := strconv.ParseUint(string(msg.TargetMessage.ID), 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parse TikTok message ID %q: %w", msg.TargetMessage.ID, err)
+	}
+
+	conv, err := tc.getConversationForPortal(ctx, msg.Portal)
+	if err != nil {
+		return nil, err
+	}
+
+	emoji := msg.PreHandleResp.Emoji
+	if emoji == "" {
+		emoji = msg.Content.RelatesTo.GetAnnotationKey()
+	}
+
+	err = tc.apiClient.SendReaction(ctx, libtiktok.SendReactionParams{
+		ConvID:          conv.ID,
+		Emoji:           emoji,
+		Action:          libtiktok.ReactionAdd,
+		SelfUserID:      tc.meta.UserID,
+		ConvoSourceID:   conv.SourceID,
+		ServerMessageID: serverMessageID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("send TikTok reaction: %w", err)
+	}
+
+	return &database.Reaction{
+		SenderID: makeUserID(tc.meta.UserID),
+		EmojiID:  networkid.EmojiID(emoji),
+		Emoji:    emoji,
+	}, nil
+}
+
+// HandleMatrixReactionRemove removes a previously bridged reaction from TikTok.
+func (tc *TikTokClient) HandleMatrixReactionRemove(ctx context.Context, msg *bridgev2.MatrixReactionRemove) error {
+	serverMessageID, err := strconv.ParseUint(string(msg.TargetReaction.MessageID), 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse TikTok message ID %q: %w", msg.TargetReaction.MessageID, err)
+	}
+
+	conv, err := tc.getConversationForPortal(ctx, msg.Portal)
+	if err != nil {
+		return err
+	}
+
+	emoji := msg.TargetReaction.Emoji
+	if emoji == "" {
+		emoji = string(msg.TargetReaction.EmojiID)
+	}
+	if emoji == "" {
+		return fmt.Errorf("reaction %s has no TikTok emoji key", msg.TargetReaction.MXID)
+	}
+
+	err = tc.apiClient.SendReaction(ctx, libtiktok.SendReactionParams{
+		ConvID:          conv.ID,
+		Emoji:           emoji,
+		Action:          libtiktok.ReactionRemove,
+		SelfUserID:      tc.meta.UserID,
+		ConvoSourceID:   conv.SourceID,
+		ServerMessageID: serverMessageID,
+	})
+	if err != nil {
+		return fmt.Errorf("remove TikTok reaction: %w", err)
+	}
+
+	return nil
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Identifier resolution
 // ────────────────────────────────────────────────────────────────────────────
@@ -512,5 +600,45 @@ func (tc *TikTokClient) ResolveIdentifier(_ context.Context, identifier string, 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
+
+func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *bridgev2.Portal) (*libtiktok.Conversation, error) {
+	convID := string(portal.ID)
+	meta, _ := portal.Metadata.(*PortalMetadata)
+	if meta != nil {
+		if meta.ConversationID != "" {
+			convID = meta.ConversationID
+		}
+		if meta.SourceID != 0 {
+			return &libtiktok.Conversation{
+				ID:       convID,
+				SourceID: meta.SourceID,
+			}, nil
+		}
+	}
+
+	convs, err := tc.apiClient.GetInbox(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get TikTok inbox for conversation lookup: %w", err)
+	}
+	for i := range convs {
+		if convs[i].ID != convID {
+			continue
+		}
+
+		if meta == nil {
+			meta = &PortalMetadata{}
+			portal.Metadata = meta
+		}
+		meta.ConversationID = convs[i].ID
+		meta.SourceID = convs[i].SourceID
+		if err := portal.Save(ctx); err != nil {
+			return nil, fmt.Errorf("cache TikTok portal metadata: %w", err)
+		}
+
+		return &convs[i], nil
+	}
+
+	return nil, fmt.Errorf("TikTok conversation %q not found in inbox", convID)
+}
 
 func ptrInt(v int) *int { return &v }
