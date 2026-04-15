@@ -27,6 +27,15 @@ func TestParseMessageContent_replyAweType703(t *testing.T) {
 	}
 }
 
+func TestParseMessageContent_placeholderHackJSONIsNotText(t *testing.T) {
+	ctx := context.Background()
+	body := []byte(`{"hack":"1"}`)
+	msgType, text, mediaURL, _ := parseMessageContent(ctx, nil, body)
+	if msgType != "" || text != "" || mediaURL != "" {
+		t.Fatalf("parseMessageContent(%q) = type=%q text=%q url=%q, want all empty", body, msgType, text, mediaURL)
+	}
+}
+
 func TestParseMessageEntry_stickerOuterFields(t *testing.T) {
 	ctx := context.Background()
 	url := "https://p16-tiktok-dm-sticker-sign-sg.ibyteimg.com/tos-alisg-i-dhq7zx4c1p-sg/2e9e491e3d7e4cfc8e1224c325883d9b~tplv-dhq7zx4c1p-full.awebp?rk3s=00edd399&x-expires=1778798048&x-signature=o4fDT044pLJ2azU2xy2AqiTzLng%3D"

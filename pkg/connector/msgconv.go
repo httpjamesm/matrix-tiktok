@@ -38,6 +38,11 @@ func (tc *TikTokClient) convertMessage(
 	intent bridgev2.MatrixAPI,
 	msg libtiktok.Message,
 ) (*bridgev2.ConvertedMessage, error) {
+	// TikTok sometimes emits an extra row with only placeholder content_json (e.g. {"hack":"1"})
+	// and no usable attachment — nothing to bridge without duplicating the real media message.
+	if ignorableTikTokCompanionMessage(msg) {
+		return nil, bridgev2.ErrIgnoringRemoteEvent
+	}
 	switch msg.Type {
 	case "text":
 		return tc.convertTextMessage(ctx, portal, msg), nil
@@ -51,6 +56,30 @@ func (tc *TikTokClient) convertMessage(
 		// Any other unsupported type falls back to a
 		// notice so the user knows something arrived even if we can't render it.
 		return convertUnknownMessage(msg), nil
+	}
+}
+
+// ignorableTikTokCompanionMessage reports rows that have no displayable payload after parsing.
+// They are not errors — often a duplicate wire envelope next to a full private_image/video row.
+func ignorableTikTokCompanionMessage(msg libtiktok.Message) bool {
+	if strings.TrimSpace(msg.Text) != "" {
+		return false
+	}
+	if msg.MediaURL != "" || msg.ThumbnailURL != "" || msg.MediaDecryptKey != "" {
+		return false
+	}
+	if msg.ReplyToServerID != 0 || len(msg.Reactions) > 0 {
+		return false
+	}
+	if msg.Type != "" {
+		return false
+	}
+	// Failed private media / sticker parses still deserve a notice, not silent drop.
+	switch strings.ToLower(msg.MessageSubtype) {
+	case "private_image", "private_video", "sticker":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -469,9 +498,24 @@ func convertImageFallback(msg libtiktok.Message) *bridgev2.ConvertedMessage {
 // convertUnknownMessage produces a fallback m.notice for message types that
 // libtiktok does not yet decode (images, stickers, likes, reactions, etc.).
 func convertUnknownMessage(msg libtiktok.Message) *bridgev2.ConvertedMessage {
-	body := fmt.Sprintf("[unsupported message type: %s]", msg.Type)
-	if msg.Text != "" {
-		body = fmt.Sprintf("[%s] %s", msg.Type, msg.Text)
+	var body string
+	if strings.TrimSpace(msg.Text) != "" {
+		if msg.Type != "" {
+			body = fmt.Sprintf("[%s] %s", msg.Type, msg.Text)
+		} else if msg.MessageSubtype != "" {
+			body = fmt.Sprintf("[subtype %s] %s", msg.MessageSubtype, msg.Text)
+		} else {
+			body = msg.Text
+		}
+	} else {
+		switch {
+		case msg.Type != "":
+			body = fmt.Sprintf("[unsupported message type: %s]", msg.Type)
+		case msg.MessageSubtype != "":
+			body = fmt.Sprintf("[unsupported TikTok message subtype: %s]", msg.MessageSubtype)
+		default:
+			body = "[unsupported TikTok message]"
+		}
 	}
 
 	umeta := messageMetaFromLib(msg)

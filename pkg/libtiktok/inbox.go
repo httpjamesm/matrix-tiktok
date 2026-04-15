@@ -139,7 +139,17 @@ func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (m
 		}
 		return
 	}
-	aweTypeF, _ := content["aweType"].(float64)
+	// Media-only rows often ship placeholder JSON like {"hack":"1"} with no aweType.
+	// A missing key must not be treated as aweType 0 — that produced Type "text" with
+	// an empty body and bridged a stray empty Matrix m.text next to image/video.
+	rawAwe, hasAwe := content["aweType"]
+	if !hasAwe || rawAwe == nil {
+		return "", "", "", ""
+	}
+	aweTypeF, ok := rawAwe.(float64)
+	if !ok {
+		return "", "", "", ""
+	}
 	switch int(aweTypeF) {
 	case 0, 700, 703:
 		msgType = "text"
