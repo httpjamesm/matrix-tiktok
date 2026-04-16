@@ -15,7 +15,7 @@ A Matrix bridge for TikTok Messages. Intended for usage with Beeper.
 - [x] Reactions
 - [x] Replies
 - [ ] Group chats
-- [x] Message deletion
+- [ ] Message deletion (receiving)
 
 ## Running
 
