@@ -26,6 +26,7 @@ const (
 	setPropertyFullURL = "https://im-api-sg.tiktok.com/v1/message/set_property"
 
 	deleteMsgPath = "/v1/message/delete"
+	recallMsgPath = "/v1/message/recall"
 )
 
 // SendMessageParams holds the parameters for sending a message.
@@ -509,7 +510,8 @@ type SendReactionParams struct {
 	ServerMessageID uint64
 }
 
-// DeleteMessageParams identifies a message to delete via POST /v1/message/delete.
+// DeleteMessageParams identifies a message for POST /v1/message/delete
+// (delete for self / local hide) or POST /v1/message/recall (delete for everyone).
 type DeleteMessageParams struct {
 	ConvID          string
 	ConvoSourceID   uint64
@@ -599,6 +601,43 @@ func buildDeletePayload(convID string, sourceID, serverMsgID uint64, deviceID, m
 		FinalFlag:      protoUint64(1),
 		Payload: &tiktokpb.DeleteRequestPayload{
 			Delete: &tiktokpb.DeleteMessageBody{
+				ConversationId:  protoString(convID),
+				SourceId:        protoUint64(sourceID),
+				Reserved_3:      protoUint64(1),
+				ServerMessageId: protoUint64(serverMsgID),
+			},
+		},
+	}
+
+	return mustMarshalProto(msg)
+}
+
+// buildRecallPayload constructs the protobuf request body for POST /v1/message/recall.
+//
+// Wire shape:
+//
+//	top-level (type 702 / sub-cmd 10025)
+//	  └─ field 8 → { field 702 → recall target (same fields as delete-for-self) }
+//	       field 1  conversation ID
+//	       field 2  source_id
+//	       field 3  1
+//	       field 4  server_message_id
+//	  └─ field 15  metadata (same style as delete)
+func buildRecallPayload(convID string, sourceID, serverMsgID uint64, deviceID, msToken, verifyFP string) []byte {
+	msg := &tiktokpb.RecallRequest{
+		MessageType:    protoUint64(702),
+		SubCommand:     protoUint64(10025),
+		ClientVersion:  protoString("1.6.0"),
+		Options:        emptyProtoMessage(),
+		PlatformFlag:   protoUint64(3),
+		Reserved_6:     protoUint64(0),
+		GitHash:        protoString(""),
+		DeviceId:       protoString(deviceID),
+		ClientPlatform: protoString("web"),
+		Metadata:       metadataKVsToProto(buildMetadata(deviceID, msToken, verifyFP)),
+		FinalFlag:      protoUint64(1),
+		Payload: &tiktokpb.RecallRequestPayload{
+			Recall: &tiktokpb.DeleteMessageBody{
 				ConversationId:  protoString(convID),
 				SourceId:        protoUint64(sourceID),
 				Reserved_3:      protoUint64(1),
@@ -804,7 +843,51 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 	return &SendMessageResponse{MessageID: msgID}, nil
 }
 
-// DeleteMessage deletes a single chat message on TikTok's IM API.
+// RecallMessage recalls (delete-for-everyone) a single chat message on TikTok's IM API.
+//
+// Like delete-for-self, the web client posts to this endpoint with no URL query
+// parameters; authentication relies on the session cookies on the client.
+func (c *Client) RecallMessage(ctx context.Context, p DeleteMessageParams) error {
+	cookie := c.rIA.Header.Get("Cookie")
+
+	universalData, err := c.getMessagesUniversalData()
+	if err != nil {
+		return fmt.Errorf("get universal data: %w", err)
+	}
+	appContext, err := universalData.getAppContext()
+	if err != nil {
+		return fmt.Errorf("get appContext: %w", err)
+	}
+	deviceID, ok := appContext["wid"].(string)
+	if !ok {
+		return fmt.Errorf("wid not found in appContext")
+	}
+
+	msToken := extractCookie(cookie, "msToken")
+	verifyFP := extractCookie(cookie, "s_v_web_id")
+
+	payload := buildRecallPayload(p.ConvID, p.ConvoSourceID, p.ServerMessageID, deviceID, msToken, verifyFP)
+
+	resp, err := c.rIA.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/x-protobuf").
+		SetHeader("Content-Type", "application/x-protobuf").
+		SetHeader("Cache-Control", "no-cache").
+		SetHeader("Origin", "https://www.tiktok.com").
+		SetBody(payload).
+		Post(recallMsgPath)
+	if err != nil {
+		return fmt.Errorf("POST recall message: %w", err)
+	}
+	if resp.IsError() {
+		return fmt.Errorf("recall message API returned %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	return nil
+}
+
+// DeleteMessage hides a message for the current account only (POST /v1/message/delete).
+// For delete-for-everyone after sending a message, use RecallMessage.
 //
 // Unlike send and set_property, the web client posts to this endpoint with no
 // URL query parameters (no ztca-dpop / X-Bogus); authentication relies on the

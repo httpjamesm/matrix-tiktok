@@ -3251,7 +3251,7 @@ func (x *SendAttachmentPayload) GetPrivateVideo() *SendPrivateVideoAttachmentPay
 	return nil
 }
 
-// Compact attachment summary mirrored at field 17 on outbound private-image sends.
+// Compact attachment summary mirrored at field 17 on outbound private-image and private_video sends.
 type SendPrivateImageFileInfo struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Width  *uint64                `protobuf:"varint,1,opt,name=width" json:"width,omitempty"`
@@ -3998,6 +3998,236 @@ func (x *DeleteMessageResponse) GetStatus() uint64 {
 	return 0
 }
 
+// Common REST request envelope for POST /v1/message/recall (delete for everyone).
+//
+// Wire layout matches the web client's recall call: outer type 702 with
+// sub_command 10025, and the target message nested at field 8 → 702 (same inner
+// fields as DeleteMessageBody). Field 7 is often a detached git revision string
+// in captures; the bridge sends an empty string like other IM endpoints.
+type RecallRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// 702 = recall / delete for everyone.
+	MessageType *uint64 `protobuf:"varint,1,opt,name=message_type,json=messageType" json:"message_type,omitempty"`
+	// Observed as 10025 for recall.
+	SubCommand     *uint64               `protobuf:"varint,2,opt,name=sub_command,json=subCommand" json:"sub_command,omitempty"`
+	ClientVersion  *string               `protobuf:"bytes,3,opt,name=client_version,json=clientVersion" json:"client_version,omitempty"`
+	Options        *EmptyMessage         `protobuf:"bytes,4,opt,name=options" json:"options,omitempty"`
+	PlatformFlag   *uint64               `protobuf:"varint,5,opt,name=platform_flag,json=platformFlag" json:"platform_flag,omitempty"`
+	Reserved_6     *uint64               `protobuf:"varint,6,opt,name=reserved_6,json=reserved6" json:"reserved_6,omitempty"`
+	GitHash        *string               `protobuf:"bytes,7,opt,name=git_hash,json=gitHash" json:"git_hash,omitempty"`
+	Payload        *RecallRequestPayload `protobuf:"bytes,8,opt,name=payload" json:"payload,omitempty"`
+	DeviceId       *string               `protobuf:"bytes,9,opt,name=device_id,json=deviceId" json:"device_id,omitempty"`
+	ClientPlatform *string               `protobuf:"bytes,11,opt,name=client_platform,json=clientPlatform" json:"client_platform,omitempty"`
+	Metadata       []*MetadataKV         `protobuf:"bytes,15,rep,name=metadata" json:"metadata,omitempty"`
+	FinalFlag      *uint64               `protobuf:"varint,18,opt,name=final_flag,json=finalFlag" json:"final_flag,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RecallRequest) Reset() {
+	*x = RecallRequest{}
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecallRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecallRequest) ProtoMessage() {}
+
+func (x *RecallRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecallRequest.ProtoReflect.Descriptor instead.
+func (*RecallRequest) Descriptor() ([]byte, []int) {
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *RecallRequest) GetMessageType() uint64 {
+	if x != nil && x.MessageType != nil {
+		return *x.MessageType
+	}
+	return 0
+}
+
+func (x *RecallRequest) GetSubCommand() uint64 {
+	if x != nil && x.SubCommand != nil {
+		return *x.SubCommand
+	}
+	return 0
+}
+
+func (x *RecallRequest) GetClientVersion() string {
+	if x != nil && x.ClientVersion != nil {
+		return *x.ClientVersion
+	}
+	return ""
+}
+
+func (x *RecallRequest) GetOptions() *EmptyMessage {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+func (x *RecallRequest) GetPlatformFlag() uint64 {
+	if x != nil && x.PlatformFlag != nil {
+		return *x.PlatformFlag
+	}
+	return 0
+}
+
+func (x *RecallRequest) GetReserved_6() uint64 {
+	if x != nil && x.Reserved_6 != nil {
+		return *x.Reserved_6
+	}
+	return 0
+}
+
+func (x *RecallRequest) GetGitHash() string {
+	if x != nil && x.GitHash != nil {
+		return *x.GitHash
+	}
+	return ""
+}
+
+func (x *RecallRequest) GetPayload() *RecallRequestPayload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *RecallRequest) GetDeviceId() string {
+	if x != nil && x.DeviceId != nil {
+		return *x.DeviceId
+	}
+	return ""
+}
+
+func (x *RecallRequest) GetClientPlatform() string {
+	if x != nil && x.ClientPlatform != nil {
+		return *x.ClientPlatform
+	}
+	return ""
+}
+
+func (x *RecallRequest) GetMetadata() []*MetadataKV {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *RecallRequest) GetFinalFlag() uint64 {
+	if x != nil && x.FinalFlag != nil {
+		return *x.FinalFlag
+	}
+	return 0
+}
+
+// Typed payload wrapper for the type-702 recall envelope (field 8 → 702).
+type RecallRequestPayload struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Recall        *DeleteMessageBody     `protobuf:"bytes,702,opt,name=recall" json:"recall,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecallRequestPayload) Reset() {
+	*x = RecallRequestPayload{}
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecallRequestPayload) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecallRequestPayload) ProtoMessage() {}
+
+func (x *RecallRequestPayload) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecallRequestPayload.ProtoReflect.Descriptor instead.
+func (*RecallRequestPayload) Descriptor() ([]byte, []int) {
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *RecallRequestPayload) GetRecall() *DeleteMessageBody {
+	if x != nil {
+		return x.Recall
+	}
+	return nil
+}
+
+// Recall response: only the outer status code is modeled for now.
+type RecallMessageResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        *uint64                `protobuf:"varint,1,opt,name=status" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecallMessageResponse) Reset() {
+	*x = RecallMessageResponse{}
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecallMessageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecallMessageResponse) ProtoMessage() {}
+
+func (x *RecallMessageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecallMessageResponse.ProtoReflect.Descriptor instead.
+func (*RecallMessageResponse) Descriptor() ([]byte, []int) {
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *RecallMessageResponse) GetStatus() uint64 {
+	if x != nil && x.Status != nil {
+		return *x.Status
+	}
+	return 0
+}
+
 // Common REST request envelope for the type-705 reaction mutation call.
 type ReactionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -4023,7 +4253,7 @@ type ReactionRequest struct {
 
 func (x *ReactionRequest) Reset() {
 	*x = ReactionRequest{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[58]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4035,7 +4265,7 @@ func (x *ReactionRequest) String() string {
 func (*ReactionRequest) ProtoMessage() {}
 
 func (x *ReactionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[58]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4048,7 +4278,7 @@ func (x *ReactionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionRequest.ProtoReflect.Descriptor instead.
 func (*ReactionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{58}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *ReactionRequest) GetMessageType() uint64 {
@@ -4145,7 +4375,7 @@ type ReactionRequestPayload struct {
 
 func (x *ReactionRequestPayload) Reset() {
 	*x = ReactionRequestPayload{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[59]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4157,7 +4387,7 @@ func (x *ReactionRequestPayload) String() string {
 func (*ReactionRequestPayload) ProtoMessage() {}
 
 func (x *ReactionRequestPayload) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[59]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4170,7 +4400,7 @@ func (x *ReactionRequestPayload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionRequestPayload.ProtoReflect.Descriptor instead.
 func (*ReactionRequestPayload) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{59}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *ReactionRequestPayload) GetWrapper() *ReactionWrapper {
@@ -4193,7 +4423,7 @@ type ReactionWrapper struct {
 
 func (x *ReactionWrapper) Reset() {
 	*x = ReactionWrapper{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[60]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4205,7 +4435,7 @@ func (x *ReactionWrapper) String() string {
 func (*ReactionWrapper) ProtoMessage() {}
 
 func (x *ReactionWrapper) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[60]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4218,7 +4448,7 @@ func (x *ReactionWrapper) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionWrapper.ProtoReflect.Descriptor instead.
 func (*ReactionWrapper) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{60}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *ReactionWrapper) GetBody() *ReactionBody {
@@ -4254,7 +4484,7 @@ type ReactionBody struct {
 
 func (x *ReactionBody) Reset() {
 	*x = ReactionBody{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[61]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4266,7 +4496,7 @@ func (x *ReactionBody) String() string {
 func (*ReactionBody) ProtoMessage() {}
 
 func (x *ReactionBody) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[61]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4279,7 +4509,7 @@ func (x *ReactionBody) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionBody.ProtoReflect.Descriptor instead.
 func (*ReactionBody) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{61}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *ReactionBody) GetConversationId() string {
@@ -4341,7 +4571,7 @@ type ReactionMutation struct {
 
 func (x *ReactionMutation) Reset() {
 	*x = ReactionMutation{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[62]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4353,7 +4583,7 @@ func (x *ReactionMutation) String() string {
 func (*ReactionMutation) ProtoMessage() {}
 
 func (x *ReactionMutation) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[62]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4366,7 +4596,7 @@ func (x *ReactionMutation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionMutation.ProtoReflect.Descriptor instead.
 func (*ReactionMutation) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{62}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *ReactionMutation) GetAction() uint64 {
@@ -4405,7 +4635,7 @@ type ReactionSummary struct {
 
 func (x *ReactionSummary) Reset() {
 	*x = ReactionSummary{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[63]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4417,7 +4647,7 @@ func (x *ReactionSummary) String() string {
 func (*ReactionSummary) ProtoMessage() {}
 
 func (x *ReactionSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[63]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4430,7 +4660,7 @@ func (x *ReactionSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionSummary.ProtoReflect.Descriptor instead.
 func (*ReactionSummary) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{63}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *ReactionSummary) GetReactionKey() string {
@@ -4457,7 +4687,7 @@ type ReactionUsers struct {
 
 func (x *ReactionUsers) Reset() {
 	*x = ReactionUsers{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[64]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4469,7 +4699,7 @@ func (x *ReactionUsers) String() string {
 func (*ReactionUsers) ProtoMessage() {}
 
 func (x *ReactionUsers) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[64]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4482,7 +4712,7 @@ func (x *ReactionUsers) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionUsers.ProtoReflect.Descriptor instead.
 func (*ReactionUsers) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{64}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *ReactionUsers) GetEntries() []*ReactionUser {
@@ -4507,7 +4737,7 @@ type ReactionUser struct {
 
 func (x *ReactionUser) Reset() {
 	*x = ReactionUser{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[65]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4519,7 +4749,7 @@ func (x *ReactionUser) String() string {
 func (*ReactionUser) ProtoMessage() {}
 
 func (x *ReactionUser) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[65]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4532,7 +4762,7 @@ func (x *ReactionUser) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionUser.ProtoReflect.Descriptor instead.
 func (*ReactionUser) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{65}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *ReactionUser) GetUserId() uint64 {
@@ -4594,7 +4824,7 @@ type WebsocketOuterFrame struct {
 
 func (x *WebsocketOuterFrame) Reset() {
 	*x = WebsocketOuterFrame{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[66]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4606,7 +4836,7 @@ func (x *WebsocketOuterFrame) String() string {
 func (*WebsocketOuterFrame) ProtoMessage() {}
 
 func (x *WebsocketOuterFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[66]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4619,7 +4849,7 @@ func (x *WebsocketOuterFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketOuterFrame.ProtoReflect.Descriptor instead.
 func (*WebsocketOuterFrame) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{66}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *WebsocketOuterFrame) GetStreamId() uint64 {
@@ -4731,7 +4961,7 @@ type WebsocketHeader struct {
 
 func (x *WebsocketHeader) Reset() {
 	*x = WebsocketHeader{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[67]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4743,7 +4973,7 @@ func (x *WebsocketHeader) String() string {
 func (*WebsocketHeader) ProtoMessage() {}
 
 func (x *WebsocketHeader) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[67]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4756,7 +4986,7 @@ func (x *WebsocketHeader) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketHeader.ProtoReflect.Descriptor instead.
 func (*WebsocketHeader) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{67}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *WebsocketHeader) GetName() []byte {
@@ -4783,7 +5013,7 @@ type WebsocketMeta struct {
 
 func (x *WebsocketMeta) Reset() {
 	*x = WebsocketMeta{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[68]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4795,7 +5025,7 @@ func (x *WebsocketMeta) String() string {
 func (*WebsocketMeta) ProtoMessage() {}
 
 func (x *WebsocketMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[68]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4808,7 +5038,7 @@ func (x *WebsocketMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketMeta.ProtoReflect.Descriptor instead.
 func (*WebsocketMeta) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{68}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *WebsocketMeta) GetValue() uint64 {
@@ -4830,7 +5060,7 @@ type WebsocketFrame struct {
 
 func (x *WebsocketFrame) Reset() {
 	*x = WebsocketFrame{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[69]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4842,7 +5072,7 @@ func (x *WebsocketFrame) String() string {
 func (*WebsocketFrame) ProtoMessage() {}
 
 func (x *WebsocketFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[69]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4855,7 +5085,7 @@ func (x *WebsocketFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketFrame.ProtoReflect.Descriptor instead.
 func (*WebsocketFrame) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{69}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *WebsocketFrame) GetEnvelope() *WebsocketEnvelope {
@@ -4880,7 +5110,7 @@ type WebsocketEnvelope struct {
 
 func (x *WebsocketEnvelope) Reset() {
 	*x = WebsocketEnvelope{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[70]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4892,7 +5122,7 @@ func (x *WebsocketEnvelope) String() string {
 func (*WebsocketEnvelope) ProtoMessage() {}
 
 func (x *WebsocketEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[70]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4905,7 +5135,7 @@ func (x *WebsocketEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketEnvelope.ProtoReflect.Descriptor instead.
 func (*WebsocketEnvelope) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{70}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *WebsocketEnvelope) GetInnerType() uint64 {
@@ -4933,7 +5163,7 @@ type WebsocketCommands struct {
 
 func (x *WebsocketCommands) Reset() {
 	*x = WebsocketCommands{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[71]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4945,7 +5175,7 @@ func (x *WebsocketCommands) String() string {
 func (*WebsocketCommands) ProtoMessage() {}
 
 func (x *WebsocketCommands) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[71]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4958,7 +5188,7 @@ func (x *WebsocketCommands) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketCommands.ProtoReflect.Descriptor instead.
 func (*WebsocketCommands) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{71}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *WebsocketCommands) GetChat() *WebsocketChat {
@@ -4986,7 +5216,7 @@ type WebsocketChat struct {
 
 func (x *WebsocketChat) Reset() {
 	*x = WebsocketChat{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[72]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4998,7 +5228,7 @@ func (x *WebsocketChat) String() string {
 func (*WebsocketChat) ProtoMessage() {}
 
 func (x *WebsocketChat) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[72]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5011,7 +5241,7 @@ func (x *WebsocketChat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketChat.ProtoReflect.Descriptor instead.
 func (*WebsocketChat) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{72}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *WebsocketChat) GetConversationId() string {
@@ -5063,7 +5293,7 @@ type WebsocketMessageDetail struct {
 
 func (x *WebsocketMessageDetail) Reset() {
 	*x = WebsocketMessageDetail{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[73]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5075,7 +5305,7 @@ func (x *WebsocketMessageDetail) String() string {
 func (*WebsocketMessageDetail) ProtoMessage() {}
 
 func (x *WebsocketMessageDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[73]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5088,7 +5318,7 @@ func (x *WebsocketMessageDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketMessageDetail.ProtoReflect.Descriptor instead.
 func (*WebsocketMessageDetail) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{73}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *WebsocketMessageDetail) GetServerMessageId() uint64 {
@@ -5194,7 +5424,7 @@ type WebsocketPropertyUpdate struct {
 
 func (x *WebsocketPropertyUpdate) Reset() {
 	*x = WebsocketPropertyUpdate{}
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[74]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5206,7 +5436,7 @@ func (x *WebsocketPropertyUpdate) String() string {
 func (*WebsocketPropertyUpdate) ProtoMessage() {}
 
 func (x *WebsocketPropertyUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[74]
+	mi := &file_proto_tiktok_im_v1_im_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5219,7 +5449,7 @@ func (x *WebsocketPropertyUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketPropertyUpdate.ProtoReflect.Descriptor instead.
 func (*WebsocketPropertyUpdate) Descriptor() ([]byte, []int) {
-	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{74}
+	return file_proto_tiktok_im_v1_im_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *WebsocketPropertyUpdate) GetConversationId() string {
@@ -5600,6 +5830,26 @@ const file_proto_tiktok_im_v1_im_proto_rawDesc = "" +
 	"reserved_3\x18\x03 \x01(\x04R\treserved3\x12*\n" +
 	"\x11server_message_id\x18\x04 \x01(\x04R\x0fserverMessageId\"/\n" +
 	"\x15DeleteMessageResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\x04R\x06status\"\xe8\x03\n" +
+	"\rRecallRequest\x12!\n" +
+	"\fmessage_type\x18\x01 \x01(\x04R\vmessageType\x12\x1f\n" +
+	"\vsub_command\x18\x02 \x01(\x04R\n" +
+	"subCommand\x12%\n" +
+	"\x0eclient_version\x18\x03 \x01(\tR\rclientVersion\x124\n" +
+	"\aoptions\x18\x04 \x01(\v2\x1a.tiktok.im.v1.EmptyMessageR\aoptions\x12#\n" +
+	"\rplatform_flag\x18\x05 \x01(\x04R\fplatformFlag\x12\x1d\n" +
+	"\n" +
+	"reserved_6\x18\x06 \x01(\x04R\treserved6\x12\x19\n" +
+	"\bgit_hash\x18\a \x01(\tR\agitHash\x12<\n" +
+	"\apayload\x18\b \x01(\v2\".tiktok.im.v1.RecallRequestPayloadR\apayload\x12\x1b\n" +
+	"\tdevice_id\x18\t \x01(\tR\bdeviceId\x12'\n" +
+	"\x0fclient_platform\x18\v \x01(\tR\x0eclientPlatform\x124\n" +
+	"\bmetadata\x18\x0f \x03(\v2\x18.tiktok.im.v1.MetadataKVR\bmetadata\x12\x1d\n" +
+	"\n" +
+	"final_flag\x18\x12 \x01(\x04R\tfinalFlag\"P\n" +
+	"\x14RecallRequestPayload\x128\n" +
+	"\x06recall\x18\xbe\x05 \x01(\v2\x1f.tiktok.im.v1.DeleteMessageBodyR\x06recall\"/\n" +
+	"\x15RecallMessageResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\x04R\x06status\"\xec\x03\n" +
 	"\x0fReactionRequest\x12!\n" +
 	"\fmessage_type\x18\x01 \x01(\x04R\vmessageType\x12\x1f\n" +
@@ -5722,7 +5972,7 @@ func file_proto_tiktok_im_v1_im_proto_rawDescGZIP() []byte {
 	return file_proto_tiktok_im_v1_im_proto_rawDescData
 }
 
-var file_proto_tiktok_im_v1_im_proto_msgTypes = make([]protoimpl.MessageInfo, 75)
+var file_proto_tiktok_im_v1_im_proto_msgTypes = make([]protoimpl.MessageInfo, 78)
 var file_proto_tiktok_im_v1_im_proto_goTypes = []any{
 	(*EmptyMessage)(nil),                      // 0: tiktok.im.v1.EmptyMessage
 	(*MetadataKV)(nil),                        // 1: tiktok.im.v1.MetadataKV
@@ -5782,23 +6032,26 @@ var file_proto_tiktok_im_v1_im_proto_goTypes = []any{
 	(*DeleteRequestPayload)(nil),              // 55: tiktok.im.v1.DeleteRequestPayload
 	(*DeleteMessageBody)(nil),                 // 56: tiktok.im.v1.DeleteMessageBody
 	(*DeleteMessageResponse)(nil),             // 57: tiktok.im.v1.DeleteMessageResponse
-	(*ReactionRequest)(nil),                   // 58: tiktok.im.v1.ReactionRequest
-	(*ReactionRequestPayload)(nil),            // 59: tiktok.im.v1.ReactionRequestPayload
-	(*ReactionWrapper)(nil),                   // 60: tiktok.im.v1.ReactionWrapper
-	(*ReactionBody)(nil),                      // 61: tiktok.im.v1.ReactionBody
-	(*ReactionMutation)(nil),                  // 62: tiktok.im.v1.ReactionMutation
-	(*ReactionSummary)(nil),                   // 63: tiktok.im.v1.ReactionSummary
-	(*ReactionUsers)(nil),                     // 64: tiktok.im.v1.ReactionUsers
-	(*ReactionUser)(nil),                      // 65: tiktok.im.v1.ReactionUser
-	(*WebsocketOuterFrame)(nil),               // 66: tiktok.im.v1.WebsocketOuterFrame
-	(*WebsocketHeader)(nil),                   // 67: tiktok.im.v1.WebsocketHeader
-	(*WebsocketMeta)(nil),                     // 68: tiktok.im.v1.WebsocketMeta
-	(*WebsocketFrame)(nil),                    // 69: tiktok.im.v1.WebsocketFrame
-	(*WebsocketEnvelope)(nil),                 // 70: tiktok.im.v1.WebsocketEnvelope
-	(*WebsocketCommands)(nil),                 // 71: tiktok.im.v1.WebsocketCommands
-	(*WebsocketChat)(nil),                     // 72: tiktok.im.v1.WebsocketChat
-	(*WebsocketMessageDetail)(nil),            // 73: tiktok.im.v1.WebsocketMessageDetail
-	(*WebsocketPropertyUpdate)(nil),           // 74: tiktok.im.v1.WebsocketPropertyUpdate
+	(*RecallRequest)(nil),                     // 58: tiktok.im.v1.RecallRequest
+	(*RecallRequestPayload)(nil),              // 59: tiktok.im.v1.RecallRequestPayload
+	(*RecallMessageResponse)(nil),             // 60: tiktok.im.v1.RecallMessageResponse
+	(*ReactionRequest)(nil),                   // 61: tiktok.im.v1.ReactionRequest
+	(*ReactionRequestPayload)(nil),            // 62: tiktok.im.v1.ReactionRequestPayload
+	(*ReactionWrapper)(nil),                   // 63: tiktok.im.v1.ReactionWrapper
+	(*ReactionBody)(nil),                      // 64: tiktok.im.v1.ReactionBody
+	(*ReactionMutation)(nil),                  // 65: tiktok.im.v1.ReactionMutation
+	(*ReactionSummary)(nil),                   // 66: tiktok.im.v1.ReactionSummary
+	(*ReactionUsers)(nil),                     // 67: tiktok.im.v1.ReactionUsers
+	(*ReactionUser)(nil),                      // 68: tiktok.im.v1.ReactionUser
+	(*WebsocketOuterFrame)(nil),               // 69: tiktok.im.v1.WebsocketOuterFrame
+	(*WebsocketHeader)(nil),                   // 70: tiktok.im.v1.WebsocketHeader
+	(*WebsocketMeta)(nil),                     // 71: tiktok.im.v1.WebsocketMeta
+	(*WebsocketFrame)(nil),                    // 72: tiktok.im.v1.WebsocketFrame
+	(*WebsocketEnvelope)(nil),                 // 73: tiktok.im.v1.WebsocketEnvelope
+	(*WebsocketCommands)(nil),                 // 74: tiktok.im.v1.WebsocketCommands
+	(*WebsocketChat)(nil),                     // 75: tiktok.im.v1.WebsocketChat
+	(*WebsocketMessageDetail)(nil),            // 76: tiktok.im.v1.WebsocketMessageDetail
+	(*WebsocketPropertyUpdate)(nil),           // 77: tiktok.im.v1.WebsocketPropertyUpdate
 }
 var file_proto_tiktok_im_v1_im_proto_depIdxs = []int32{
 	0,  // 0: tiktok.im.v1.MediaUploadConfigRequest.options:type_name -> tiktok.im.v1.EmptyMessage
@@ -5830,7 +6083,7 @@ var file_proto_tiktok_im_v1_im_proto_depIdxs = []int32{
 	27, // 26: tiktok.im.v1.MessageAttachmentPayload.sticker:type_name -> tiktok.im.v1.StickerMessagePayload
 	29, // 27: tiktok.im.v1.PrivateImageAttachment.variants:type_name -> tiktok.im.v1.PrivateImageVariant
 	8,  // 28: tiktok.im.v1.ConversationMessageEntry.tags:type_name -> tiktok.im.v1.MetadataTag
-	63, // 29: tiktok.im.v1.ConversationMessageEntry.reactions:type_name -> tiktok.im.v1.ReactionSummary
+	66, // 29: tiktok.im.v1.ConversationMessageEntry.reactions:type_name -> tiktok.im.v1.ReactionSummary
 	22, // 30: tiktok.im.v1.ConversationMessageEntry.message_reply:type_name -> tiktok.im.v1.MessageReplyReference
 	28, // 31: tiktok.im.v1.ConversationMessageEntry.attachment:type_name -> tiktok.im.v1.MessageAttachmentPayload
 	30, // 32: tiktok.im.v1.ConversationMessageEntry.private_image:type_name -> tiktok.im.v1.PrivateImageAttachment
@@ -5867,32 +6120,36 @@ var file_proto_tiktok_im_v1_im_proto_depIdxs = []int32{
 	55, // 63: tiktok.im.v1.DeleteRequest.payload:type_name -> tiktok.im.v1.DeleteRequestPayload
 	1,  // 64: tiktok.im.v1.DeleteRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
 	56, // 65: tiktok.im.v1.DeleteRequestPayload.delete:type_name -> tiktok.im.v1.DeleteMessageBody
-	0,  // 66: tiktok.im.v1.ReactionRequest.options:type_name -> tiktok.im.v1.EmptyMessage
-	59, // 67: tiktok.im.v1.ReactionRequest.payload:type_name -> tiktok.im.v1.ReactionRequestPayload
-	1,  // 68: tiktok.im.v1.ReactionRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
-	60, // 69: tiktok.im.v1.ReactionRequestPayload.wrapper:type_name -> tiktok.im.v1.ReactionWrapper
-	61, // 70: tiktok.im.v1.ReactionWrapper.body:type_name -> tiktok.im.v1.ReactionBody
-	62, // 71: tiktok.im.v1.ReactionBody.reactions:type_name -> tiktok.im.v1.ReactionMutation
-	64, // 72: tiktok.im.v1.ReactionSummary.users:type_name -> tiktok.im.v1.ReactionUsers
-	65, // 73: tiktok.im.v1.ReactionUsers.entries:type_name -> tiktok.im.v1.ReactionUser
-	67, // 74: tiktok.im.v1.WebsocketOuterFrame.headers:type_name -> tiktok.im.v1.WebsocketHeader
-	68, // 75: tiktok.im.v1.WebsocketOuterFrame.meta:type_name -> tiktok.im.v1.WebsocketMeta
-	68, // 76: tiktok.im.v1.WebsocketOuterFrame.reserved_14:type_name -> tiktok.im.v1.WebsocketMeta
-	70, // 77: tiktok.im.v1.WebsocketFrame.envelope:type_name -> tiktok.im.v1.WebsocketEnvelope
-	71, // 78: tiktok.im.v1.WebsocketEnvelope.commands:type_name -> tiktok.im.v1.WebsocketCommands
-	72, // 79: tiktok.im.v1.WebsocketCommands.chat:type_name -> tiktok.im.v1.WebsocketChat
-	74, // 80: tiktok.im.v1.WebsocketCommands.property_update:type_name -> tiktok.im.v1.WebsocketPropertyUpdate
-	73, // 81: tiktok.im.v1.WebsocketChat.detail:type_name -> tiktok.im.v1.WebsocketMessageDetail
-	8,  // 82: tiktok.im.v1.WebsocketMessageDetail.tags:type_name -> tiktok.im.v1.MetadataTag
-	22, // 83: tiktok.im.v1.WebsocketMessageDetail.message_reply:type_name -> tiktok.im.v1.MessageReplyReference
-	28, // 84: tiktok.im.v1.WebsocketMessageDetail.attachment:type_name -> tiktok.im.v1.MessageAttachmentPayload
-	30, // 85: tiktok.im.v1.WebsocketMessageDetail.private_image:type_name -> tiktok.im.v1.PrivateImageAttachment
-	8,  // 86: tiktok.im.v1.WebsocketPropertyUpdate.tags:type_name -> tiktok.im.v1.MetadataTag
-	87, // [87:87] is the sub-list for method output_type
-	87, // [87:87] is the sub-list for method input_type
-	87, // [87:87] is the sub-list for extension type_name
-	87, // [87:87] is the sub-list for extension extendee
-	0,  // [0:87] is the sub-list for field type_name
+	0,  // 66: tiktok.im.v1.RecallRequest.options:type_name -> tiktok.im.v1.EmptyMessage
+	59, // 67: tiktok.im.v1.RecallRequest.payload:type_name -> tiktok.im.v1.RecallRequestPayload
+	1,  // 68: tiktok.im.v1.RecallRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
+	56, // 69: tiktok.im.v1.RecallRequestPayload.recall:type_name -> tiktok.im.v1.DeleteMessageBody
+	0,  // 70: tiktok.im.v1.ReactionRequest.options:type_name -> tiktok.im.v1.EmptyMessage
+	62, // 71: tiktok.im.v1.ReactionRequest.payload:type_name -> tiktok.im.v1.ReactionRequestPayload
+	1,  // 72: tiktok.im.v1.ReactionRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
+	63, // 73: tiktok.im.v1.ReactionRequestPayload.wrapper:type_name -> tiktok.im.v1.ReactionWrapper
+	64, // 74: tiktok.im.v1.ReactionWrapper.body:type_name -> tiktok.im.v1.ReactionBody
+	65, // 75: tiktok.im.v1.ReactionBody.reactions:type_name -> tiktok.im.v1.ReactionMutation
+	67, // 76: tiktok.im.v1.ReactionSummary.users:type_name -> tiktok.im.v1.ReactionUsers
+	68, // 77: tiktok.im.v1.ReactionUsers.entries:type_name -> tiktok.im.v1.ReactionUser
+	70, // 78: tiktok.im.v1.WebsocketOuterFrame.headers:type_name -> tiktok.im.v1.WebsocketHeader
+	71, // 79: tiktok.im.v1.WebsocketOuterFrame.meta:type_name -> tiktok.im.v1.WebsocketMeta
+	71, // 80: tiktok.im.v1.WebsocketOuterFrame.reserved_14:type_name -> tiktok.im.v1.WebsocketMeta
+	73, // 81: tiktok.im.v1.WebsocketFrame.envelope:type_name -> tiktok.im.v1.WebsocketEnvelope
+	74, // 82: tiktok.im.v1.WebsocketEnvelope.commands:type_name -> tiktok.im.v1.WebsocketCommands
+	75, // 83: tiktok.im.v1.WebsocketCommands.chat:type_name -> tiktok.im.v1.WebsocketChat
+	77, // 84: tiktok.im.v1.WebsocketCommands.property_update:type_name -> tiktok.im.v1.WebsocketPropertyUpdate
+	76, // 85: tiktok.im.v1.WebsocketChat.detail:type_name -> tiktok.im.v1.WebsocketMessageDetail
+	8,  // 86: tiktok.im.v1.WebsocketMessageDetail.tags:type_name -> tiktok.im.v1.MetadataTag
+	22, // 87: tiktok.im.v1.WebsocketMessageDetail.message_reply:type_name -> tiktok.im.v1.MessageReplyReference
+	28, // 88: tiktok.im.v1.WebsocketMessageDetail.attachment:type_name -> tiktok.im.v1.MessageAttachmentPayload
+	30, // 89: tiktok.im.v1.WebsocketMessageDetail.private_image:type_name -> tiktok.im.v1.PrivateImageAttachment
+	8,  // 90: tiktok.im.v1.WebsocketPropertyUpdate.tags:type_name -> tiktok.im.v1.MetadataTag
+	91, // [91:91] is the sub-list for method output_type
+	91, // [91:91] is the sub-list for method input_type
+	91, // [91:91] is the sub-list for extension type_name
+	91, // [91:91] is the sub-list for extension extendee
+	0,  // [0:91] is the sub-list for field type_name
 }
 
 func init() { file_proto_tiktok_im_v1_im_proto_init() }
@@ -5906,7 +6163,7 @@ func file_proto_tiktok_im_v1_im_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_tiktok_im_v1_im_proto_rawDesc), len(file_proto_tiktok_im_v1_im_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   75,
+			NumMessages:   78,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

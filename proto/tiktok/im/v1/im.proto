@@ -577,6 +577,39 @@ message DeleteMessageResponse {
   optional uint64 status = 1;
 }
 
+// Common REST request envelope for POST /v1/message/recall (delete for everyone).
+//
+// Wire layout matches the web client's recall call: outer type 702 with
+// sub_command 10025, and the target message nested at field 8 → 702 (same inner
+// fields as DeleteMessageBody). Field 7 is often a detached git revision string
+// in captures; the bridge sends an empty string like other IM endpoints.
+message RecallRequest {
+  // 702 = recall / delete for everyone.
+  optional uint64 message_type = 1;
+  // Observed as 10025 for recall.
+  optional uint64 sub_command = 2;
+  optional string client_version = 3;
+  optional EmptyMessage options = 4;
+  optional uint64 platform_flag = 5;
+  optional uint64 reserved_6 = 6;
+  optional string git_hash = 7;
+  optional RecallRequestPayload payload = 8;
+  optional string device_id = 9;
+  optional string client_platform = 11;
+  repeated MetadataKV metadata = 15;
+  optional uint64 final_flag = 18;
+}
+
+// Typed payload wrapper for the type-702 recall envelope (field 8 → 702).
+message RecallRequestPayload {
+  optional DeleteMessageBody recall = 702;
+}
+
+// Recall response: only the outer status code is modeled for now.
+message RecallMessageResponse {
+  optional uint64 status = 1;
+}
+
 // Common REST request envelope for the type-705 reaction mutation call.
 message ReactionRequest {
   // 705 = set_property / reaction mutation.

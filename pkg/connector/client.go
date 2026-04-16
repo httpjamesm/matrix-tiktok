@@ -853,9 +853,10 @@ func (tc *TikTokClient) buildOutgoingReply(log *zerolog.Logger, msg *bridgev2.Ma
 	}
 }
 
-// HandleMatrixMessageRemove deletes the message on TikTok when the redacted
-// Matrix event corresponds to a message we sent. Other messages are left
-// untouched on TikTok (Matrix redaction still completes on the bridge side).
+// HandleMatrixMessageRemove recalls the message on TikTok (delete for everyone)
+// when the redacted Matrix event corresponds to a message we sent. Other
+// messages are left untouched on TikTok (Matrix redaction still completes on
+// the bridge side).
 func (tc *TikTokClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
 	if msg.TargetMessage == nil {
 		return fmt.Errorf("nil redaction target message")
@@ -877,13 +878,13 @@ func (tc *TikTokClient) HandleMatrixMessageRemove(ctx context.Context, msg *brid
 		return err
 	}
 
-	err = tc.apiClient.DeleteMessage(ctx, libtiktok.DeleteMessageParams{
+	err = tc.apiClient.RecallMessage(ctx, libtiktok.DeleteMessageParams{
 		ConvID:          conv.ID,
 		ConvoSourceID:   conv.SourceID,
 		ServerMessageID: serverMessageID,
 	})
 	if err != nil {
-		return fmt.Errorf("delete TikTok message: %w", err)
+		return fmt.Errorf("recall TikTok message: %w", err)
 	}
 	return nil
 }
