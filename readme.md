@@ -8,7 +8,7 @@ A Matrix bridge for TikTok Messages. Intended for usage with Beeper.
   - [x] Text
   - [x] Images
   - [x] Videos
-  - [ ] Stickers
+  - [x] Stickers
   - [ ] Voice Notes
   - [x] TikToks
 - [ ] Read receipts
