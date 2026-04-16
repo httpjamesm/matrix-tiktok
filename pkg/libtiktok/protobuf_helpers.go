@@ -17,6 +17,14 @@ func protoUint64(v uint64) *uint64 {
 	return &v
 }
 
+func protoInt32(v int32) *int32 {
+	return &v
+}
+
+func protoInt64(v int64) *int64 {
+	return &v
+}
+
 func emptyProtoMessage() *tiktokpb.EmptyMessage {
 	return &tiktokpb.EmptyMessage{}
 }
@@ -88,6 +96,9 @@ func hasRealMessageProto(entry *tiktokpb.InboxConversationEntry) bool {
 	if entry.GetSourceId() != 0 {
 		return true
 	}
+	if entry.GetLastServerMessageId() != 0 {
+		return true
+	}
 	if entry.GetLastMessageType() != 0 {
 		return true
 	}
@@ -97,15 +108,54 @@ func hasRealMessageProto(entry *tiktokpb.InboxConversationEntry) bool {
 func parseConversationEntryProto(entry *tiktokpb.InboxConversationEntry) (Conversation, error) {
 	convID := entry.GetConversationId()
 	sourceID := entry.GetSourceId()
+	if convID == "" {
+		return Conversation{}, fmt.Errorf("missing conversation ID")
+	}
 
-	parts := strings.Split(convID, ":")
-	if len(parts) < 2 {
-		return Conversation{}, fmt.Errorf("unexpected convID format: %q", convID)
+	participants := []string(nil)
+	if strings.Contains(convID, ":") {
+		parts := strings.Split(convID, ":")
+		if len(parts) < 2 {
+			return Conversation{}, fmt.Errorf("unexpected convID format: %q", convID)
+		}
+		participants = parts[len(parts)-2:]
 	}
 
 	return Conversation{
 		ID:           convID,
 		SourceID:     sourceID,
-		Participants: parts[len(parts)-2:],
+		Participants: participants,
+	}, nil
+}
+
+func parseConversationDetailProto(detail *tiktokpb.InboxConversationDetail) (Conversation, error) {
+	convID := detail.GetConversationId()
+	if convID == "" {
+		return Conversation{}, fmt.Errorf("missing conversation ID")
+	}
+
+	sourceID := detail.GetSourceId()
+	if sourceID == 0 {
+		sourceID = detail.GetCore().GetSourceId()
+	}
+
+	participants := make([]string, 0, len(detail.GetMembers().GetEntries()))
+	for _, member := range detail.GetMembers().GetEntries() {
+		if uid := member.GetUserId(); uid != 0 {
+			participants = append(participants, strconv.FormatUint(uid, 10))
+		}
+	}
+
+	if len(participants) == 0 && strings.Contains(convID, ":") {
+		parts := strings.Split(convID, ":")
+		if len(parts) >= 2 {
+			participants = append(participants, parts[len(parts)-2:]...)
+		}
+	}
+
+	return Conversation{
+		ID:           convID,
+		SourceID:     sourceID,
+		Participants: participants,
 	}, nil
 }

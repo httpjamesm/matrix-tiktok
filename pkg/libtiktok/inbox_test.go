@@ -7,6 +7,382 @@ import (
 	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
 )
 
+func TestParseConversationEntryProto_DMConversationID(t *testing.T) {
+	entry := &tiktokpb.InboxConversationEntry{
+		ConversationId: protoString("0:1:1111111111111111111:2222222222222222222"),
+		SourceId:       protoUint64(12345),
+	}
+
+	conv, err := parseConversationEntryProto(entry)
+	if err != nil {
+		t.Fatalf("parseConversationEntryProto returned error: %v", err)
+	}
+	if conv.ID != "0:1:1111111111111111111:2222222222222222222" {
+		t.Fatalf("conv.ID = %q", conv.ID)
+	}
+	if conv.SourceID != 12345 {
+		t.Fatalf("conv.SourceID = %d", conv.SourceID)
+	}
+	if len(conv.Participants) != 2 || conv.Participants[0] != "1111111111111111111" || conv.Participants[1] != "2222222222222222222" {
+		t.Fatalf("participants = %v", conv.Participants)
+	}
+}
+
+func TestParseConversationEntryProto_GroupConversationID(t *testing.T) {
+	entry := &tiktokpb.InboxConversationEntry{
+		ConversationId:      protoString("7587998693467750664"),
+		ConversationType:    protoUint64(2),
+		LastServerMessageId: protoUint64(7628432918204974623),
+		SourceId:            protoUint64(7587998693467750664),
+		LastMessageType:     protoUint64(7),
+		LastMessagePreview:  []byte(`{"aweType":0,"rich_text_infos":[],"text":"Bots."}`),
+	}
+
+	conv, err := parseConversationEntryProto(entry)
+	if err != nil {
+		t.Fatalf("parseConversationEntryProto returned error: %v", err)
+	}
+	if conv.ID != "7587998693467750664" {
+		t.Fatalf("conv.ID = %q", conv.ID)
+	}
+	if conv.SourceID != 7587998693467750664 {
+		t.Fatalf("conv.SourceID = %d", conv.SourceID)
+	}
+	if len(conv.Participants) != 0 {
+		t.Fatalf("participants = %v, want empty", conv.Participants)
+	}
+}
+
+func TestParseConversationDetailProto_GroupConversation(t *testing.T) {
+	detail := &tiktokpb.InboxConversationDetail{
+		ConversationId:   protoString("7587998693467750664"),
+		SourceId:         protoUint64(7587998693467750664),
+		ConversationType: protoUint64(2),
+		Members: &tiktokpb.InboxConversationMembers{
+			Entries: []*tiktokpb.InboxConversationMember{
+				{UserId: protoUint64(1111111111111111111)},
+				{UserId: protoUint64(2222222222222222222)},
+				{UserId: protoUint64(5555555555555555555)},
+			},
+		},
+	}
+
+	conv, err := parseConversationDetailProto(detail)
+	if err != nil {
+		t.Fatalf("parseConversationDetailProto returned error: %v", err)
+	}
+	if conv.ID != "7587998693467750664" {
+		t.Fatalf("conv.ID = %q", conv.ID)
+	}
+	if conv.SourceID != 7587998693467750664 {
+		t.Fatalf("conv.SourceID = %d", conv.SourceID)
+	}
+	want := []string{"1111111111111111111", "2222222222222222222", "5555555555555555555"}
+	if len(conv.Participants) != len(want) {
+		t.Fatalf("participants = %v, want %v", conv.Participants, want)
+	}
+	for i, got := range conv.Participants {
+		if got != want[i] {
+			t.Fatalf("participants[%d] = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+func TestParseInboxResponse_GroupSummaryEntry(t *testing.T) {
+	body := mustMarshalProto(&tiktokpb.InboxResponse{
+		MessageType: protoUint64(203),
+		SubCommand:  protoUint64(10002),
+		Status:      protoUint64(0),
+		Message:     protoString("OK"),
+		Reserved_5:  protoUint64(1),
+		Payload: &tiktokpb.InboxResponsePayload{
+			UserInitList: &tiktokpb.InboxConversationList{
+				Entries: []*tiktokpb.InboxConversationEntry{
+					{
+						ConversationId:         protoString("7587998693467750664"),
+						ConversationType:       protoUint64(2),
+						LastServerMessageId:    protoUint64(7628432918204974623),
+						LastMessageTimestampUs: protoUint64(1776132948610297),
+						SourceId:               protoUint64(7587998693467750664),
+						LastMessageType:        protoUint64(7),
+						LastSenderUserId:       protoUint64(5555555555555555555),
+						LastMessagePreview:     []byte(`{"aweType":0,"rich_text_infos":[],"text":"Bots."}`),
+						LastSenderSecUid:       protoString("MS4wLjABAAAAREDACTEDREDACTEDREDACTEDREDACTEDREDACTED_REDACTED_USER_D"),
+						MessageSubtype:         protoString(""),
+						CursorTsUs:             protoUint64(1776126260444831),
+					},
+				},
+			},
+		},
+	})
+
+	convs, err := parseInboxResponse(body)
+	if err != nil {
+		t.Fatalf("parseInboxResponse returned error: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("len(convs) = %d, want 1", len(convs))
+	}
+	if convs[0].ID != "7587998693467750664" {
+		t.Fatalf("convs[0].ID = %q", convs[0].ID)
+	}
+	if convs[0].SourceID != 7587998693467750664 {
+		t.Fatalf("convs[0].SourceID = %d", convs[0].SourceID)
+	}
+	if len(convs[0].Participants) != 0 {
+		t.Fatalf("convs[0].Participants = %v, want empty", convs[0].Participants)
+	}
+}
+
+func TestParseInboxResponse_PrefersConversationDetails(t *testing.T) {
+	body := mustMarshalProto(&tiktokpb.InboxResponse{
+		MessageType: protoUint64(203),
+		SubCommand:  protoUint64(10002),
+		Status:      protoUint64(0),
+		Message:     protoString("OK"),
+		Reserved_5:  protoUint64(1),
+		Payload: &tiktokpb.InboxResponsePayload{
+			UserInitList: &tiktokpb.InboxConversationList{
+				Entries: []*tiktokpb.InboxConversationEntry{
+					{
+						ConversationId:      protoString("7587998693467750664"),
+						ConversationType:    protoUint64(2),
+						LastServerMessageId: protoUint64(7628432918204974623),
+						SourceId:            protoUint64(7587998693467750664),
+						LastMessageType:     protoUint64(7),
+						LastMessagePreview:  []byte(`{"aweType":0,"text":"Bots."}`),
+					},
+					{
+						ConversationId:      protoString("7587998693467750664"),
+						ConversationType:    protoUint64(2),
+						LastServerMessageId: protoUint64(7628404185273091605),
+						SourceId:            protoUint64(7587998693467750664),
+						LastMessageType:     protoUint64(7),
+						LastMessagePreview:  []byte(`{"aweType":700,"text":"h"}`),
+					},
+				},
+				Conversations: []*tiktokpb.InboxConversationDetail{
+					{
+						ConversationId:   protoString("7587998693467750664"),
+						SourceId:         protoUint64(7587998693467750664),
+						ConversationType: protoUint64(2),
+						Members: &tiktokpb.InboxConversationMembers{
+							Entries: []*tiktokpb.InboxConversationMember{
+								{UserId: protoUint64(1111111111111111111)},
+								{UserId: protoUint64(2222222222222222222)},
+								{UserId: protoUint64(5555555555555555555)},
+							},
+						},
+					},
+					{
+						ConversationId:   protoString("7588000000000000000"),
+						SourceId:         protoUint64(7588000000000000000),
+						ConversationType: protoUint64(2),
+						Members: &tiktokpb.InboxConversationMembers{
+							Entries: []*tiktokpb.InboxConversationMember{
+								{UserId: protoUint64(111)},
+								{UserId: protoUint64(222)},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	convs, err := parseInboxResponse(body)
+	if err != nil {
+		t.Fatalf("parseInboxResponse returned error: %v", err)
+	}
+	if len(convs) != 2 {
+		t.Fatalf("len(convs) = %d, want 2", len(convs))
+	}
+	if convs[0].ID != "7587998693467750664" || convs[1].ID != "7588000000000000000" {
+		t.Fatalf("conversation IDs = [%q, %q]", convs[0].ID, convs[1].ID)
+	}
+}
+
+func TestParseInboxResponse_MergesDetailAndLegacyEntries(t *testing.T) {
+	body := mustMarshalProto(&tiktokpb.InboxResponse{
+		MessageType: protoUint64(203),
+		SubCommand:  protoUint64(10006),
+		Status:      protoUint64(0),
+		Message:     protoString("OK"),
+		Reserved_5:  protoUint64(1),
+		Payload: &tiktokpb.InboxResponsePayload{
+			UserInitList: &tiktokpb.InboxConversationList{
+				Entries: []*tiktokpb.InboxConversationEntry{
+					{
+						ConversationId:     protoString("0:1:111:222"),
+						SourceId:           protoUint64(222),
+						LastMessagePreview: []byte(`{"aweType":700,"text":"dm"}`),
+					},
+				},
+				Conversations: []*tiktokpb.InboxConversationDetail{
+					{
+						ConversationId:   protoString("7587998693467750664"),
+						SourceId:         protoUint64(7587998693467750664),
+						ConversationType: protoUint64(2),
+						Members: &tiktokpb.InboxConversationMembers{
+							Entries: []*tiktokpb.InboxConversationMember{
+								{UserId: protoUint64(1111111111111111111)},
+								{UserId: protoUint64(2222222222222222222)},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	convs, err := parseInboxResponse(body)
+	if err != nil {
+		t.Fatalf("parseInboxResponse returned error: %v", err)
+	}
+	if len(convs) != 2 {
+		t.Fatalf("len(convs) = %d, want 2", len(convs))
+	}
+	if convs[0].ID != "7587998693467750664" || convs[1].ID != "0:1:111:222" {
+		t.Fatalf("conversation IDs = [%q, %q]", convs[0].ID, convs[1].ID)
+	}
+}
+
+func TestMergeInboxConversations(t *testing.T) {
+	merged := mergeInboxConversations(
+		[]Conversation{
+			{
+				ID:           "group-1",
+				SourceID:     1,
+				Participants: []string{"111", "222"},
+			},
+		},
+		[]Conversation{
+			{
+				ID:           "group-1",
+				SourceID:     1,
+				Participants: []string{"222", "333"},
+			},
+			{
+				ID:           "dm-1",
+				SourceID:     2,
+				Participants: []string{"444"},
+			},
+		},
+	)
+
+	if len(merged) != 2 {
+		t.Fatalf("len(merged) = %d, want 2", len(merged))
+	}
+	if got := merged[0].Participants; len(got) != 3 || got[0] != "111" || got[1] != "222" || got[2] != "333" {
+		t.Fatalf("merged[0].Participants = %v", got)
+	}
+	if merged[1].ID != "dm-1" {
+		t.Fatalf("merged[1].ID = %q", merged[1].ID)
+	}
+}
+
+func TestBuildInboxPayloadMatchesObservedGroupChatVariant(t *testing.T) {
+	payload := buildInboxPayload("7618758333039134226", "ms-token", "verify-fp", 10002)
+
+	var req tiktokpb.InboxRequest
+	if err := unmarshalProto(payload, &req); err != nil {
+		t.Fatalf("unmarshal inbox payload: %v", err)
+	}
+
+	if req.GetMessageType() != 203 {
+		t.Fatalf("message_type = %d, want 203", req.GetMessageType())
+	}
+	if req.GetSubCommand() != 10002 {
+		t.Fatalf("sub_command = %d, want 10002", req.GetSubCommand())
+	}
+	if req.GetReserved_6() != 1 {
+		t.Fatalf("reserved_6 = %d, want 1", req.GetReserved_6())
+	}
+	init := req.GetPayload().GetUserInitList()
+	if init.GetSortType() != 0 || init.GetCursor() != 0 || init.GetConType() != 0 || init.GetLimit() != 0 {
+		t.Fatalf("payload.user_init_list = sort_type %d cursor %d con_type %d limit %d, want minimal 0,0,0,0",
+			init.GetSortType(), init.GetCursor(), init.GetConType(), init.GetLimit())
+	}
+	if req.GetDeviceId() != "7618758333039134226" {
+		t.Fatalf("device_id = %q", req.GetDeviceId())
+	}
+
+	metadata := req.GetMetadata()
+	if got := metadataValue(metadata, "referer"); got != "https://www.tiktok.com/messages" {
+		t.Fatalf("referer = %q", got)
+	}
+	if got := metadataValue(metadata, "browser_version"); got != DEFAULT_USER_AGENT {
+		t.Fatalf("browser_version = %q", got)
+	}
+	if got := metadataValue(metadata, "user_agent"); got != DEFAULT_USER_AGENT {
+		t.Fatalf("user_agent = %q", got)
+	}
+	if got := metadataValue(metadata, "verifyFp"); got != "verify-fp" {
+		t.Fatalf("verifyFp = %q", got)
+	}
+	if got := metadataValue(metadata, "Web-Sdk-Ms-Token"); got != "ms-token" {
+		t.Fatalf("Web-Sdk-Ms-Token = %q", got)
+	}
+}
+
+func TestBuildInboxPayloadSupportsNormalConversationVariant(t *testing.T) {
+	payload := buildInboxPayload("7618758333039134226", "ms-token", "verify-fp", 10006)
+
+	var req tiktokpb.InboxRequest
+	if err := unmarshalProto(payload, &req); err != nil {
+		t.Fatalf("unmarshal inbox payload: %v", err)
+	}
+	if req.GetSubCommand() != 10006 {
+		t.Fatalf("sub_command = %d, want 10006", req.GetSubCommand())
+	}
+	if req.GetReserved_6() != 0 {
+		t.Fatalf("reserved_6 = %d, want 0", req.GetReserved_6())
+	}
+}
+
+func TestBuildMetadataPreservesObservedInboxOrdering(t *testing.T) {
+	pairs := buildMetadata("device-id", "ms-token", "verify-fp")
+	keys := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		keys = append(keys, pair.k)
+	}
+
+	verifyIdx := indexOf(keys, "verifyFp")
+	appLangIdx := indexOf(keys, "app_language")
+	userAgentIdx := indexOf(keys, "user_agent")
+	msTokenIdx := indexOf(keys, "Web-Sdk-Ms-Token")
+	if verifyIdx == -1 || appLangIdx == -1 || userAgentIdx == -1 || msTokenIdx == -1 {
+		t.Fatalf("expected verifyFp/app_language/user_agent/Web-Sdk-Ms-Token metadata keys, got %v", keys)
+	}
+	if verifyIdx > appLangIdx {
+		t.Fatalf("verifyFp should precede app_language, got keys %v", keys)
+	}
+	if msTokenIdx != len(keys)-1 {
+		t.Fatalf("Web-Sdk-Ms-Token should be last, got keys %v", keys)
+	}
+	if userAgentIdx > msTokenIdx {
+		t.Fatalf("user_agent should precede Web-Sdk-Ms-Token, got keys %v", keys)
+	}
+}
+
+func metadataValue(metadata []*tiktokpb.MetadataKV, key string) string {
+	for _, pair := range metadata {
+		if pair.GetKey() == key {
+			return pair.GetValue()
+		}
+	}
+	return ""
+}
+
+func indexOf(items []string, want string) int {
+	for i, item := range items {
+		if item == want {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestParseReplyQuotedTextFromWire(t *testing.T) {
 	raw := `{"content":"{\"aweType\":0,\"text\":\"test\"}","refmsg_content":"{\"aweType\":0,\"text\":\"test\"}","refmsg_uid":"1234567890123456789"}`
 	got := parseReplyQuotedTextFromWire([]byte(raw))

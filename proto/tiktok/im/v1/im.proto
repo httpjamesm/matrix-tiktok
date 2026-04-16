@@ -116,14 +116,15 @@ message MetadataTag {
 message InboxRequest {
   // 203 = user_init_list / inbox bootstrap.
   optional uint64 message_type = 1;
-  // Observed as 10001 for inbox bootstrap.
+  // Observed as 10002 on current web inbox bootstrap captures that include group chats.
   optional uint64 sub_command = 2;
   optional string client_version = 3;
   optional EmptyMessage options = 4;
   // 3 = web_pc in current traffic.
   optional uint64 platform_flag = 5;
+  // Observed as 1 on current web inbox bootstrap captures.
   optional uint64 reserved_6 = 6;
-  // Present but empty in current traffic.
+  // Often a detached web build revision string; the bridge may leave it empty when unknown.
   optional string git_hash = 7;
   optional InboxRequestPayload payload = 8;
   optional string device_id = 9;
@@ -135,20 +136,54 @@ message InboxRequest {
 
 // Typed payload wrapper for the type-203 request envelope.
 message InboxRequestPayload {
-  optional InboxInitRequest user_init_list = 203;
+  // Inner body matches the web client's im_proto.GetUserConversationListRequestBody.
+  optional GetUserConversationListRequestBody user_init_list = 203;
 }
 
-// Current inbox bootstrap inner body.
+// Inner request body for the 203 "user_init_list" / inbox bootstrap call.
 //
-// The web client sends field 1 = 0 here.
-message InboxInitRequest {
-  optional uint64 reserved_1 = 1;
+// Names and wire order are taken from the web client's protobufjs bundle; only
+// partially interpreted fields are called out conservatively below.
+message GetUserConversationListRequestBody {
+  // Drives conversation ordering in the returned list; exact enum values are
+  // not mapped from this repository alone. The web client's JS prototype
+  // defaults this to 1; this bridge historically sent 0 as the only set field
+  // (legacy uint64 reserved_1) for a full default inbox page.
+  optional int32 sort_type = 1;
+  // Pagination cursor; 0 means start from the beginning. Sent as int64 on web.
+  optional int64 cursor = 2;
+  // Conversation-category filter; client default 1 (often "all" or "primary"
+  // bucket in IM clients — treat as opaque until capture-backed mapping exists).
+  optional int32 con_type = 3;
+  // Maximum rows to return; 0 lets the server pick a default page size.
+  optional int64 limit = 4;
+  // When non-zero, selects which participant / membership roles to include.
+  optional int32 include_role = 5;
+  // When non-zero, excludes matching role bitmask / enum from the result set.
+  optional int32 exclude_role = 6;
+  // Include group conversations the user has left or that are otherwise "removed"
+  // from the normal active list.
+  optional bool include_removed_group = 7;
+  // Include "cold" (archived / low-activity / secondary-storage) conversations.
+  optional bool with_cold = 8;
+  // Extra conversation-type selector; name follows the web client spelling
+  // ("customed"). Semantics beyond "additional filter" are not confirmed here.
+  optional int32 customed_con_type = 9;
+  // Additional role filters when more than one role bit must be requested.
+  repeated int32 include_multiple_roles = 10;
 }
 
 // Common response envelope used by the inbox endpoint.
 message InboxResponse {
-  // Server/application status code from the outer envelope.
-  optional uint64 status = 1;
+  // 203 = inbox bootstrap response on current web captures.
+  optional uint64 message_type = 1;
+  // Observed as 10002 on current web captures.
+  optional uint64 sub_command = 2;
+  // Server/application status code (0 = success in current captures).
+  optional uint64 status = 3;
+  // Human-readable status text, e.g. "OK".
+  optional string message = 4;
+  optional uint64 reserved_5 = 5;
   // Endpoint-specific payload wrapper.
   optional InboxResponsePayload payload = 6;
 }
@@ -158,24 +193,120 @@ message InboxResponsePayload {
   optional InboxConversationList user_init_list = 203;
 }
 
-// Repeated inbox conversation entries.
+// Inbox bootstrap payload.
+//
+// Current web captures carry:
+// - field 1: repeated last-message summary rows
+// - field 2: repeated conversation records
+// Older reverse-engineering work only modeled field 1.
 message InboxConversationList {
   repeated InboxConversationEntry entries = 1;
+  repeated InboxConversationDetail conversations = 2;
 }
 
 // Minimal subset of an inbox conversation entry currently used by the bridge.
 //
-// The client treats entries with only placeholder content as non-real inbox
-// rows and drops them.
+// Older direct-message captures used a small conversation stub here, but
+// current web captures can return richer "last message summary" rows instead.
+// We model the stable fields the bridge needs and leave the rest unknown.
 message InboxConversationEntry {
-  // Format observed as "0:1:<userA>:<userB>" for direct messages.
+  // Direct-message captures use "0:1:<userA>:<userB>"; group chats have also
+  // been observed using a plain numeric string here.
   optional string conversation_id = 1;
-  // Non-zero when the thread contains a real last message.
-  optional uint64 last_message_type = 4;
+  // Observed as 2 on group-chat rows in current captures.
+  optional uint64 conversation_type = 2;
+  // Server-assigned ID of the latest message previewed in this row.
+  optional uint64 last_server_message_id = 3;
+  // Timestamp of the latest message in microseconds.
+  optional uint64 last_message_timestamp_us = 4;
   // Conversation source ID, reused by get_by_conversation and reactions.
   optional uint64 source_id = 5;
-  // Raw preview bytes; "placeholder" indicates an empty stub row.
+  // Message kind / awe wrapper indicator for the latest row. Older schema work
+  // treated this as field 4; current captures place it at field 6.
+  optional uint64 last_message_type = 6;
+  // Numeric sender user ID of the latest message, when present.
+  optional uint64 last_sender_user_id = 7;
+  // Raw preview bytes or full last-message content JSON. Older captures used
+  // "placeholder" here for empty stub rows.
   optional bytes last_message_preview = 8;
+  repeated MetadataTag tags = 9;
+  optional string last_sender_sec_uid = 14;
+  optional string message_subtype = 21;
+  optional uint64 cursor_ts_us = 25;
+}
+
+// One conversation record from inbox bootstrap field 2.
+message InboxConversationDetail {
+  optional string conversation_id = 1;
+  // Numeric conversation/source ID reused by follow-up APIs.
+  optional uint64 source_id = 2;
+  optional uint64 conversation_type = 3;
+  optional string deprecated = 4;
+  optional InboxConversationMembers members = 6;
+  optional uint64 reserved_7 = 7;
+  optional uint64 reserved_8 = 8;
+  optional uint64 reserved_11 = 11;
+  optional uint64 last_update_ms = 13;
+  optional InboxConversationCore core = 50;
+  optional InboxConversationState state = 51;
+}
+
+message InboxConversationMembers {
+  repeated InboxConversationMember entries = 1;
+  optional uint64 reserved_2 = 2;
+  optional uint64 reserved_3 = 3;
+}
+
+message InboxConversationMember {
+  optional uint64 user_id = 1;
+  optional uint64 role = 2;
+  optional uint64 membership = 3;
+  optional string reserved_4 = 4;
+  optional uint64 reserved_6 = 6;
+  optional string reserved_9 = 9;
+}
+
+// Conversation metadata blob nested under field 50.
+message InboxConversationCore {
+  optional string conversation_id = 1;
+  optional uint64 source_id = 2;
+  optional uint64 conversation_type = 3;
+  optional uint64 created_at_s = 4;
+  optional string title = 5;
+  optional string reserved_6 = 6;
+  optional string avatar_url = 7;
+  optional uint64 reserved_8 = 8;
+  optional string reserved_9 = 9;
+  repeated MetadataKV attributes = 11;
+  optional uint64 owner_user_id = 12;
+  optional string owner_sec_uid = 13;
+  optional uint64 reserved_14 = 14;
+  optional uint64 reserved_15 = 15;
+  optional uint64 reserved_16 = 16;
+  optional uint64 reserved_17 = 17;
+  optional uint64 reserved_18 = 18;
+  optional uint64 avatar_created_at_s = 20;
+}
+
+// Per-user conversation state nested under field 51.
+message InboxConversationState {
+  optional string conversation_id = 1;
+  optional uint64 source_id = 2;
+  optional uint64 conversation_type = 3;
+  optional uint64 reserved_4 = 4;
+  optional uint64 last_message_timestamp_us = 5;
+  optional uint64 reserved_6 = 6;
+  optional uint64 reserved_7 = 7;
+  optional uint64 reserved_8 = 8;
+  repeated MetadataKV attributes = 9;
+  optional uint64 updated_at_s = 10;
+  optional uint64 reserved_11 = 11;
+  optional uint64 reserved_12 = 12;
+  optional uint64 reserved_13 = 13;
+  optional uint64 reserved_17 = 17;
+  optional uint64 reserved_18 = 18;
+  optional string reserved_19 = 19;
+  optional uint64 reserved_20 = 20;
 }
 
 // Common REST request envelope for the type-301 get_by_conversation call.

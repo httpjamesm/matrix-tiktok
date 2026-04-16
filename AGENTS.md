@@ -15,6 +15,9 @@ This repository is a Matrix bridge for TikTok messaging. Most work falls into on
 - Generated Go types live in `pkg/libtiktok/pb/`. Treat that directory as generated code; edit the `.proto` file instead.
 - Small handwritten adapters/helpers live in `pkg/libtiktok/protobuf_helpers.go`.
 - When changing the wire schema, keep the generated types as the wire layer and convert into the handwritten domain types (`Conversation`, `Message`, `Reaction`) rather than spreading generated types through the rest of the codebase.
+- Regenerate `pkg/libtiktok/pb/im.pb.go` immediately after schema edits using `PATH="/go/bin:$PATH" protoc --proto_path=proto --go_out=. --go_opt=module=github.com/httpjamesm/matrix-tiktok proto/tiktok/im/v1/im.proto` unless the repo provides a newer documented command.
+- Do not run bare `protoc --go_out=.` without the module option: that writes a duplicate generated tree under `github.com/httpjamesm/matrix-tiktok/...` instead of updating `pkg/libtiktok/pb/im.pb.go`.
+- After regeneration, verify that only the expected generated file under `pkg/libtiktok/pb/` changed and delete any stray duplicate output before continuing.
 
 ## Message Flow
 
@@ -39,3 +42,4 @@ This repository is a Matrix bridge for TikTok messaging. Most work falls into on
 
 - If you change protobuf schemas, regenerate code before testing.
 - Do not hand-edit generated `.pb.go` files.
+- After regenerating protobufs, run the relevant tests only after confirming the checked-in generated file was updated in place.

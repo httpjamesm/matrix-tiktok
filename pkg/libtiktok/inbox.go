@@ -216,62 +216,104 @@ func buildMetadata(deviceID, msToken, verifyFP string) []metaKV {
 		{"region", "CA"},
 		{"priority_region", "CA"},
 		{"os", "mac"},
-		{"referer", "https://www.tiktok.com/messages?lang=en"},
+		{"referer", "https://www.tiktok.com/messages"},
 		{"root_referer", ""},
 		{"cookie_enabled", "true"},
-		{"screen_width", "1512"},
-		{"screen_height", "982"},
+		{"screen_width", "1800"},
+		{"screen_height", "1169"},
 		{"browser_language", "en-US"},
 		{"browser_platform", "MacIntel"},
 		{"browser_name", "Mozilla"},
+		// The web client mirrors the full UA string here, not just the version token.
+		{"browser_version", DEFAULT_USER_AGENT},
 		{"browser_online", "true"},
-		{"app_language", "en"},
-		{"webcast_language", "en"},
-		{"tz_name", "America/Toronto"},
-		{"is_page_visible", "true"},
-		{"focus_state", "true"},
-		{"is_fullscreen", "false"},
-		{"history_len", "2"},
-		{"user_is_login", "true"},
-		{"data_collection_enabled", "true"},
-		{"from_appID", imAID},
-		{"locale", "en"},
-		{"user_agent", DEFAULT_USER_AGENT},
 	}
 	if verifyFP != "" {
 		pairs = append(pairs, metaKV{"verifyFp", verifyFP})
 	}
+	pairs = append(pairs,
+		metaKV{"app_language", "en"},
+		metaKV{"webcast_language", "en"},
+		metaKV{"tz_name", "America/Toronto"},
+		metaKV{"is_page_visible", "true"},
+		metaKV{"focus_state", "true"},
+		metaKV{"is_fullscreen", "false"},
+		metaKV{"history_len", "2"},
+		metaKV{"user_is_login", "true"},
+		metaKV{"data_collection_enabled", "true"},
+		metaKV{"from_appID", imAID},
+		metaKV{"locale", "en"},
+		metaKV{"user_agent", DEFAULT_USER_AGENT},
+	)
 	if msToken != "" {
 		pairs = append(pairs, metaKV{"Web-Sdk-Ms-Token", msToken})
 	}
-	pairs = append(pairs, metaKV{
-		"browser_version",
-		"5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-	})
 	return pairs
 }
 
-func buildInboxPayload(deviceID, msToken, verifyFP string) []byte {
+func buildInboxPayload(deviceID, msToken, verifyFP string, subCommand uint64) []byte {
+	reserved6 := uint64(1)
+	if subCommand == 10006 {
+		reserved6 = 0
+	}
+
 	msg := &tiktokpb.InboxRequest{
 		MessageType:    protoUint64(203),
-		SubCommand:     protoUint64(10001),
+		SubCommand:     protoUint64(subCommand),
 		ClientVersion:  protoString("1.6.0"),
 		Options:        emptyProtoMessage(),
 		PlatformFlag:   protoUint64(3),
-		Reserved_6:     protoUint64(0),
+		Reserved_6:     protoUint64(reserved6),
 		GitHash:        protoString(""),
 		DeviceId:       protoString(deviceID),
 		ClientPlatform: protoString("web"),
 		Metadata:       metadataKVsToProto(buildMetadata(deviceID, msToken, verifyFP)),
 		FinalFlag:      protoUint64(1),
 		Payload: &tiktokpb.InboxRequestPayload{
-			UserInitList: &tiktokpb.InboxInitRequest{
-				Reserved_1: protoUint64(0),
+			// Only field 1 = 0 matches the pre-schema bridge (uint64 reserved_1).
+			// Sending explicit limit=0 / con_type / cursor changed server behavior
+			// (small truncated lists); omit those fields so the server uses defaults.
+			UserInitList: &tiktokpb.GetUserConversationListRequestBody{
+				SortType: protoInt32(0),
 			},
 		},
 	}
 
 	return mustMarshalProto(msg)
+}
+
+func mergeInboxConversations(existing, incoming []Conversation) []Conversation {
+	indexByID := make(map[string]int, len(existing))
+	for i, conv := range existing {
+		indexByID[conv.ID] = i
+	}
+
+	for _, conv := range incoming {
+		if idx, ok := indexByID[conv.ID]; ok {
+			if existing[idx].SourceID == 0 {
+				existing[idx].SourceID = conv.SourceID
+			}
+			if len(conv.Participants) > 0 {
+				seenParticipants := make(map[string]struct{}, len(existing[idx].Participants))
+				for _, participant := range existing[idx].Participants {
+					seenParticipants[participant] = struct{}{}
+				}
+				for _, participant := range conv.Participants {
+					if _, seen := seenParticipants[participant]; seen {
+						continue
+					}
+					existing[idx].Participants = append(existing[idx].Participants, participant)
+					seenParticipants[participant] = struct{}{}
+				}
+			}
+			continue
+		}
+
+		indexByID[conv.ID] = len(existing)
+		existing = append(existing, conv)
+	}
+
+	return existing
 }
 
 // ---------------------------------------------------------------------------
@@ -284,13 +326,32 @@ func parseInboxResponse(body []byte) ([]Conversation, error) {
 		return nil, fmt.Errorf("decode top-level response: %w", err)
 	}
 
-	entries := resp.GetPayload().GetUserInitList().GetEntries()
+	userInit := resp.GetPayload().GetUserInitList()
+	convs := make([]Conversation, 0, len(userInit.GetConversations())+len(userInit.GetEntries()))
+
+	details := userInit.GetConversations()
+	if len(details) > 0 {
+		detailConvs := make([]Conversation, 0, len(details))
+		for _, detail := range details {
+			conv, err := parseConversationDetailProto(detail)
+			if err != nil {
+				continue
+			}
+			detailConvs = append(detailConvs, conv)
+		}
+		convs = mergeInboxConversations(convs, detailConvs)
+	}
+
+	entries := userInit.GetEntries()
 	if len(entries) == 0 {
-		return nil, nil // empty inbox
+		if len(convs) == 0 {
+			return nil, nil // empty inbox
+		}
+		return convs, nil
 	}
 
 	seen := make(map[string]struct{}, len(entries))
-	convs := make([]Conversation, 0, len(entries))
+	entryConvs := make([]Conversation, 0, len(entries))
 	for _, entry := range entries {
 		if !hasRealMessageProto(entry) {
 			continue
@@ -303,7 +364,41 @@ func parseInboxResponse(body []byte) ([]Conversation, error) {
 			continue
 		}
 		seen[conv.ID] = struct{}{}
-		convs = append(convs, conv)
+		entryConvs = append(entryConvs, conv)
+	}
+	return mergeInboxConversations(convs, entryConvs), nil
+}
+
+func (c *Client) fetchInbox(ctx context.Context, deviceID, msToken, verifyFP string, subCommand uint64) ([]Conversation, error) {
+	payload := buildInboxPayload(deviceID, msToken, verifyFP, subCommand)
+
+	resp, err := c.rIA.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/x-protobuf").
+		SetHeader("Content-Type", "application/x-protobuf").
+		SetHeader("Cache-Control", "no-cache").
+		SetHeader("Origin", "https://www.tiktok.com").
+		SetHeader("Referer", "https://www.tiktok.com/messages").
+		SetQueryParams(map[string]string{
+			"aid":             imAID,
+			"version_code":    "1.0.0",
+			"app_name":        "tiktok_web",
+			"device_platform": "web_pc",
+			"msToken":         msToken,
+			"X-Bogus":         randomBogus(),
+		}).
+		SetBody(payload).
+		Post(inboxURL)
+	if err != nil {
+		return nil, fmt.Errorf("post inbox subcommand %d: %w", subCommand, err)
+	}
+	if resp.IsError() {
+		return nil, fmt.Errorf("inbox API subcommand %d returned %d: %s", subCommand, resp.StatusCode(), resp.String())
+	}
+
+	convs, err := parseInboxResponse(resp.Body())
+	if err != nil {
+		return nil, fmt.Errorf("parse inbox subcommand %d response: %w", subCommand, err)
 	}
 	return convs, nil
 }
@@ -336,36 +431,15 @@ func (c *Client) GetInbox(ctx context.Context) ([]Conversation, error) {
 	msToken := extractCookie(cookie, "msToken")
 	verifyFP := extractCookie(cookie, "s_v_web_id")
 
-	payload := buildInboxPayload(deviceID, msToken, verifyFP)
-
-	resp, err := c.rIA.R().
-		SetContext(ctx).
-		SetHeader("Accept", "application/x-protobuf").
-		SetHeader("Content-Type", "application/x-protobuf").
-		SetHeader("Cache-Control", "no-cache").
-		SetHeader("Origin", "https://www.tiktok.com").
-		SetQueryParams(map[string]string{
-			"aid":             imAID,
-			"version_code":    "1.0.0",
-			"app_name":        "tiktok_web",
-			"device_platform": "web_pc",
-			"msToken":         msToken,
-			"X-Bogus":         randomBogus(),
-		}).
-		SetBody(payload).
-		Post(inboxURL)
+	groupConvs, err := c.fetchInbox(ctx, deviceID, msToken, verifyFP, 10002)
 	if err != nil {
-		return nil, fmt.Errorf("post inbox: %w", err)
+		return nil, err
 	}
-	if resp.IsError() {
-		return nil, fmt.Errorf("inbox API returned %d: %s", resp.StatusCode(), resp.String())
-	}
-
-	convs, err := parseInboxResponse(resp.Body())
+	normalConvs, err := c.fetchInbox(ctx, deviceID, msToken, verifyFP, 10006)
 	if err != nil {
-		return nil, fmt.Errorf("parse inbox response: %w", err)
+		return nil, err
 	}
-	return convs, nil
+	return mergeInboxConversations(groupConvs, normalConvs), nil
 }
 
 // ---------------------------------------------------------------------------
