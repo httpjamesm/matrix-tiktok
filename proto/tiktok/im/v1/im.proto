@@ -26,6 +26,69 @@ message MetadataKV {
   optional string value = 2;
 }
 
+// Common REST request envelope for the type-2059 media upload config call.
+message MediaUploadConfigRequest {
+  optional uint64 message_type = 1;
+  optional uint64 sub_command = 2;
+  optional string client_version = 3;
+  optional EmptyMessage options = 4;
+  optional uint64 platform_flag = 5;
+  optional uint64 reserved_6 = 6;
+  optional string git_hash = 7;
+  optional MediaUploadConfigRequestPayload payload = 8;
+  optional string device_id = 9;
+  optional string client_platform = 11;
+  repeated MetadataKV metadata = 15;
+  optional uint64 final_flag = 18;
+}
+
+// Request payload for POST /v1/media/upload_config.
+//
+// Captures show field 2059 present with an empty string payload.
+message MediaUploadConfigRequestPayload {
+  optional string imagex = 2059;
+}
+
+// Response envelope for POST /v1/media/upload_config.
+//
+// Only the image-upload branch (field 6 -> 2059) is modeled for now.
+message MediaUploadConfigResponse {
+  optional uint64 reserved_1 = 1;
+  optional uint64 reserved_2 = 2;
+  optional uint64 reserved_3 = 3;
+  optional string message = 4;
+  optional uint64 reserved_5 = 5;
+  optional MediaUploadConfigPayload payload = 6;
+  optional string request_id = 7;
+  optional uint64 reserved_10 = 10;
+  optional uint64 reserved_11 = 11;
+  optional string region_name = 14;
+  optional uint64 user_id = 15;
+}
+
+message MediaUploadConfigPayload {
+  optional MediaUploadConfigList imagex = 2059;
+}
+
+message MediaUploadConfigList {
+  repeated MediaUploadConfigEntry entries = 1;
+}
+
+message MediaUploadConfigEntry {
+  // 1 = ImageX image upload, 2 = VOD upload in current captures.
+  optional uint64 upload_kind = 1;
+  optional string service_id = 2;
+  optional string host = 3;
+  optional uint64 expires_at_ms = 4;
+  optional uint64 issued_at_ms = 5;
+  // AccessKeyId used in the Authorization credential scope.
+  optional string access_key_id = 6;
+  // Base64-encoded STS response, echoed directly as x-amz-security-token.
+  optional string security_token = 7;
+  // SecretAccessKey passed into TikTok's request signer.
+  optional string secret_access_key = 8;
+}
+
 // Generic tag/value pair used inside message bodies.
 //
 // Known keys include:
@@ -340,6 +403,64 @@ message SendMessageReplyAttachment {
   optional uint64 parent_cursor_ts_us = 4;
 }
 
+// Shared width/height pair used by outbound private-image payloads.
+message SendMediaSize {
+  optional uint64 width = 1;
+  optional uint64 height = 2;
+}
+
+// One encrypted private-image asset reference inside the outbound send payload.
+message SendPrivateImageAsset {
+  optional string path = 1;
+  optional SendMediaSize size = 5;
+  optional string decrypt_key = 6;
+  optional uint64 reserved_7 = 7;
+}
+
+// Localized preview texts shown in TikTok's DM list / quote previews.
+message SendPrivateImageDisplayTexts {
+  optional LocalizedText sender_preview = 1;
+  optional LocalizedText recipient_preview = 2;
+  optional LocalizedText bracketed_preview = 3;
+}
+
+// Additional key/value metadata attached to one outbound private image.
+message SendPrivateImageMetadataEntry {
+  optional string path = 1;
+  repeated MetadataKV properties = 2;
+}
+
+message SendPrivateImageMetadataList {
+  repeated SendPrivateImageMetadataEntry entries = 1;
+}
+
+// Field 13 -> 4 on outbound private-image sends.
+message SendPrivateImageAttachmentPayload {
+  repeated SendPrivateImageAsset assets = 1;
+  optional SendPrivateImageDisplayTexts display_texts = 3;
+  optional SendPrivateImageMetadataList metadata = 200;
+}
+
+message SendAttachmentPayload {
+  optional SendPrivateImageAttachmentPayload private_image = 4;
+}
+
+// Compact attachment summary mirrored at field 17 on outbound private-image sends.
+message SendPrivateImageFileInfo {
+  optional uint64 width = 1;
+  optional uint64 height = 2;
+  optional uint64 reserved_3 = 3;
+  optional uint64 size = 4;
+  optional string file_name = 5;
+}
+
+message SendPrivateImageAttachmentSummary {
+  optional uint64 reserved_1 = 1;
+  optional string path = 2;
+  optional string decrypt_key = 3;
+  optional SendPrivateImageFileInfo file_info = 10;
+}
+
 message SendMessageBody {
   optional string conversation_id = 1;
   optional uint64 message_kind = 2;
@@ -351,6 +472,9 @@ message SendMessageBody {
   // Client-generated UUID v4 used for deduplication across REST and WS paths.
   optional string client_message_id = 8;
   optional SendMessageReplyAttachment message_reply = 11;
+  optional SendAttachmentPayload attachment = 13;
+  optional string message_subtype = 14;
+  optional SendPrivateImageAttachmentSummary private_image = 17;
 }
 
 // Send-message response envelope.

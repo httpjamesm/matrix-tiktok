@@ -46,7 +46,7 @@ func (tc *TikTokConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilitie
 // resend room-info / capability state events.  Increment the first value when
 // uk.half-shot.bridge changes, and the second when com.beeper.room_features changes.
 func (tc *TikTokConnector) GetBridgeInfoVersion() (info, capabilities int) {
-	return 1, 3 // bump capabilities when com.beeper.room_features changes
+	return 1, 4 // bump capabilities when com.beeper.room_features changes
 }
 
 // GetName returns static metadata that identifies this bridge to Matrix.

@@ -3,7 +3,9 @@ package connector
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +19,10 @@ import (
 
 	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 )
+
+// tiktokMatrixImageMaxBytes is advertised in com.beeper.room_features (m.image / m.file)
+// and is a soft cap for clients; TikTok may still reject oversized payloads.
+const tiktokMatrixImageMaxBytes = 50 * 1024 * 1024
 
 // TikTokClient implements bridgev2.NetworkAPI for a single logged-in TikTok session.
 type TikTokClient struct {
@@ -498,6 +504,14 @@ func (tc *TikTokClient) IsThisUser(_ context.Context, userID networkid.UserID) b
 
 // GetCapabilities returns the Matrix room feature-set for this login.
 func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *event.RoomFeatures {
+	imageUpload := &event.FileFeatures{
+		MimeTypes: map[string]event.CapabilitySupportLevel{
+			"image/*": event.CapLevelFullySupported,
+		},
+		// HandleMatrixImageMessage rejects non-empty captions for now.
+		Caption:   event.CapLevelRejected,
+		MaxSize:   tiktokMatrixImageMaxBytes,
+	}
 	return &event.RoomFeatures{
 		MaxTextLength: 1000,
 		// Beeper uses com.beeper.room_features; without this, delete/unsend stays hidden
@@ -505,6 +519,11 @@ func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *
 		Delete: event.CapLevelFullySupported,
 		// Rich replies (m.relates_to → TikTok aweType 703).
 		Reply: event.CapLevelFullySupported,
+		// File uploads: many clients send images as m.file; advertise both.
+		File: event.FileFeatureMap{
+			event.MsgImage: imageUpload,
+			event.MsgFile:  imageUpload,
+		},
 	}
 }
 
@@ -611,55 +630,20 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	content := *msg.Content
 	content.RemoveReplyFallback()
 
+	reply := tc.buildOutgoingReply(log, msg)
+	if content.MsgType == event.MsgImage {
+		return tc.handleMatrixImageMessage(ctx, msg, &content, reply)
+	}
+	if content.MsgType == event.MsgFile {
+		if content.Info != nil && content.Info.MimeType != "" && !strings.HasPrefix(content.Info.MimeType, "image/") {
+			return nil, bridgev2.ErrUnsupportedMessageType
+		}
+		return tc.handleMatrixImageMessage(ctx, msg, &content, reply)
+	}
+
 	text, err := matrixToTikTok(&content)
 	if err != nil {
 		return nil, err
-	}
-
-	var reply *libtiktok.OutgoingMessageReply
-	if msg.ReplyTo != nil {
-		if msg.ReplyTo.Room == msg.Portal.PortalKey {
-			parentID, perr := strconv.ParseUint(string(msg.ReplyTo.ID), 10, 64)
-			if perr != nil {
-				log.Debug().Err(perr).Str("parent_id", string(msg.ReplyTo.ID)).
-					Msg("Matrix reply target is not a TikTok server message id; sending without TikTok reply envelope")
-			} else if parentID == 0 {
-				log.Debug().Str("parent_id", string(msg.ReplyTo.ID)).
-					Msg("Matrix reply target has zero id; sending without TikTok reply envelope")
-			} else {
-				var pm *MessageMetadata
-				if raw, ok := msg.ReplyTo.Metadata.(*MessageMetadata); ok {
-					pm = raw
-				}
-				refUID := string(msg.ReplyTo.SenderID)
-				refSec := ""
-				chainID := uint64(0)
-				cursorUs := uint64(0)
-				contentJSON := ""
-				if pm != nil {
-					refSec = pm.SenderSecUID
-					chainID = pm.SendChainID
-					cursorUs = pm.CursorTsUs
-					contentJSON = pm.ContentJSON
-				}
-				if cursorUs == 0 {
-					cursorUs = uint64(msg.ReplyTo.Timestamp.UnixMicro())
-				}
-				refBytes, rerr := libtiktok.BuildReplyReferenceJSON(contentJSON, refUID, refSec)
-				if rerr != nil {
-					log.Warn().Err(rerr).Msg("Failed to build TikTok reply reference JSON; sending as non-reply")
-				} else {
-					reply = &libtiktok.OutgoingMessageReply{
-						ParentServerMessageID: parentID,
-						ParentSendChainID:     chainID,
-						ParentCursorTsUs:      cursorUs,
-						ReferencePayloadJSON:  refBytes,
-					}
-				}
-			}
-		} else {
-			log.Debug().Msg("Matrix reply target is in another portal; sending without TikTok reply envelope")
-		}
 	}
 
 	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
@@ -677,6 +661,107 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 			SenderID: makeUserID(tc.meta.UserID),
 		},
 	}, nil
+}
+
+func (tc *TikTokClient) handleMatrixImageMessage(
+	ctx context.Context,
+	msg *bridgev2.MatrixMessage,
+	content *event.MessageEventContent,
+	reply *libtiktok.OutgoingMessageReply,
+) (*bridgev2.MatrixMessageResponse, error) {
+	if strings.TrimSpace(content.GetCaption()) != "" {
+		return nil, fmt.Errorf("image captions are not yet supported on TikTok")
+	}
+
+	matrix := tc.userLogin.Bridge.Matrix.BotIntent()
+	data, err := matrix.DownloadMedia(ctx, content.URL, content.File)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", bridgev2.ErrMediaDownloadFailed, err)
+	}
+
+	mimeType := ""
+	if content.Info != nil {
+		mimeType = content.Info.MimeType
+	}
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(mimeType, "image/") {
+		return nil, bridgev2.ErrUnsupportedMessageType
+	}
+
+	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
+		ConvID: string(msg.Portal.ID),
+		Reply:  reply,
+		Image: &libtiktok.OutgoingImage{
+			Data:     data,
+			FileName: content.GetFileName(),
+			MimeType: mimeType,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("send TikTok image: %w", err)
+	}
+
+	return &bridgev2.MatrixMessageResponse{
+		DB: &database.Message{
+			ID:       networkid.MessageID(resp.MessageID),
+			SenderID: makeUserID(tc.meta.UserID),
+		},
+	}, nil
+}
+
+func (tc *TikTokClient) buildOutgoingReply(log *zerolog.Logger, msg *bridgev2.MatrixMessage) *libtiktok.OutgoingMessageReply {
+	if msg.ReplyTo == nil {
+		return nil
+	}
+	if msg.ReplyTo.Room != msg.Portal.PortalKey {
+		log.Debug().Msg("Matrix reply target is in another portal; sending without TikTok reply envelope")
+		return nil
+	}
+
+	parentID, perr := strconv.ParseUint(string(msg.ReplyTo.ID), 10, 64)
+	if perr != nil {
+		log.Debug().Err(perr).Str("parent_id", string(msg.ReplyTo.ID)).
+			Msg("Matrix reply target is not a TikTok server message id; sending without TikTok reply envelope")
+		return nil
+	}
+	if parentID == 0 {
+		log.Debug().Str("parent_id", string(msg.ReplyTo.ID)).
+			Msg("Matrix reply target has zero id; sending without TikTok reply envelope")
+		return nil
+	}
+
+	var pm *MessageMetadata
+	if raw, ok := msg.ReplyTo.Metadata.(*MessageMetadata); ok {
+		pm = raw
+	}
+	refUID := string(msg.ReplyTo.SenderID)
+	refSec := ""
+	chainID := uint64(0)
+	cursorUs := uint64(0)
+	contentJSON := ""
+	if pm != nil {
+		refSec = pm.SenderSecUID
+		chainID = pm.SendChainID
+		cursorUs = pm.CursorTsUs
+		contentJSON = pm.ContentJSON
+	}
+	if cursorUs == 0 {
+		cursorUs = uint64(msg.ReplyTo.Timestamp.UnixMicro())
+	}
+
+	refBytes, err := libtiktok.BuildReplyReferenceJSON(contentJSON, refUID, refSec)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to build TikTok reply reference JSON; sending as non-reply")
+		return nil
+	}
+	return &libtiktok.OutgoingMessageReply{
+		ParentServerMessageID: parentID,
+		ParentSendChainID:     chainID,
+		ParentCursorTsUs:      cursorUs,
+		ReferencePayloadJSON:  refBytes,
+	}
 }
 
 // HandleMatrixMessageRemove deletes the message on TikTok when the redacted

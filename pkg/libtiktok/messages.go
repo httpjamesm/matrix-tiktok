@@ -9,11 +9,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 const (
@@ -32,7 +34,9 @@ type SendMessageParams struct {
 	Text   string
 	// Reply, when non-nil, sends aweType 703 with protobuf field 11 (message_reply).
 	Reply *OutgoingMessageReply
-	// later: MediaData []byte, MimeType string, etc.
+	// Image, when non-nil, uploads an encrypted private image and sends the
+	// corresponding private_image payload instead of a text body.
+	Image *OutgoingImage
 }
 
 // OutgoingMessageReply carries the TikTok reply envelope for POST /v1/message/send.
@@ -51,13 +55,13 @@ func BuildReplyReferenceJSON(parentContentJSON, refmsgUID, refmsgSecUID string) 
 		inner = `{"aweType":0,"text":""}`
 	}
 	outer := map[string]any{
-		"content":                 inner,
-		"refmsg_content":          inner,
-		"refmsg_sec_uid":          refmsgSecUID,
-		"refmsg_type":             7,
-		"refmsg_uid":              refmsgUID,
-		"refmsg_sub_type":         "",
-		"refmsg_template_quote":   "",
+		"content":               inner,
+		"refmsg_content":        inner,
+		"refmsg_sec_uid":        refmsgSecUID,
+		"refmsg_type":           7,
+		"refmsg_uid":            refmsgUID,
+		"refmsg_sub_type":       "",
+		"refmsg_template_quote": "",
 	}
 	return json.Marshal(outer)
 }
@@ -216,12 +220,11 @@ func buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64 string) []metaK
 //	       field 8  client message UUID
 //	       field 11 message_reply when aweType=703 (reply)
 //	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
-func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string, reply *OutgoingMessageReply) []byte {
+func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string, reply *OutgoingMessageReply, image *uploadedPrivateImage) []byte {
 	sendBody := &tiktokpb.SendMessageBody{
 		ConversationId:  protoString(convID),
 		MessageKind:     protoUint64(1),
 		Reserved_3:      protoUint64(0),
-		Reserved_6:      protoUint64(7),
 		Deprecated:      protoString("deprecated"),
 		ClientMessageId: protoString(clientMsgID),
 		Tags: []*tiktokpb.MetadataTag{
@@ -231,7 +234,6 @@ func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, c
 	}
 	var textJSON []byte
 	if reply != nil {
-		textJSON, _ = json.Marshal(map[string]any{"aweType": 703, "text": text})
 		sendBody.Reserved_3 = protoUint64(reply.ParentSendChainID)
 		sendBody.MessageReply = &tiktokpb.SendMessageReplyAttachment{
 			ReferencedServerMessageId:          protoUint64(reply.ParentServerMessageID),
@@ -239,10 +241,64 @@ func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, c
 			DuplicateReferencedServerMessageId: protoUint64(reply.ParentServerMessageID),
 			ParentCursorTsUs:                   protoUint64(reply.ParentCursorTsUs),
 		}
+	}
+	if image != nil {
+		sendBody.ContentJson = []byte{}
+		sendBody.Reserved_6 = protoUint64(1802)
+		sendBody.MessageSubtype = protoString("private_image")
+		sendBody.Attachment = &tiktokpb.SendAttachmentPayload{
+			PrivateImage: &tiktokpb.SendPrivateImageAttachmentPayload{
+				Assets: []*tiktokpb.SendPrivateImageAsset{
+					{
+						Path: protoString(image.URI),
+						Size: &tiktokpb.SendMediaSize{
+							Width:  protoUint64(uint64(image.Width)),
+							Height: protoUint64(uint64(image.Height)),
+						},
+						DecryptKey: protoString(image.DecryptKey),
+						Reserved_7: protoUint64(0),
+					},
+				},
+				DisplayTexts: &tiktokpb.SendPrivateImageDisplayTexts{
+					SenderPreview:    &tiktokpb.LocalizedText{Text: protoString("You sent a 📷")},
+					RecipientPreview: &tiktokpb.LocalizedText{Text: protoString("sent a 📷")},
+					BracketedPreview: &tiktokpb.LocalizedText{Text: protoString("[Photo]")},
+				},
+				Metadata: &tiktokpb.SendPrivateImageMetadataList{
+					Entries: []*tiktokpb.SendPrivateImageMetadataEntry{
+						{
+							Path: protoString(image.URI),
+							Properties: metadataKVsToProto([]metaKV{
+								{"image_width", strconv.Itoa(image.Width)},
+								{"image_height", strconv.Itoa(image.Height)},
+								{"decrypt_key", image.DecryptKey},
+								{"quote_preview", "dm_cam_preview_photo"},
+								{"sender_preview", "sender_preview"},
+							}),
+						},
+					},
+				},
+			},
+		}
+		sendBody.PrivateImage = &tiktokpb.SendPrivateImageAttachmentSummary{
+			Reserved_1: protoUint64(1),
+			Path:       protoString(image.URI),
+			DecryptKey: protoString(image.DecryptKey),
+			FileInfo: &tiktokpb.SendPrivateImageFileInfo{
+				Width:    protoUint64(uint64(image.Width)),
+				Height:   protoUint64(uint64(image.Height)),
+				Size:     protoUint64(uint64(image.Size)),
+				FileName: protoString(image.FileName),
+			},
+		}
 	} else {
 		textJSON, _ = json.Marshal(map[string]any{"aweType": 0, "text": text})
+		if reply != nil {
+			textJSON, _ = json.Marshal(map[string]any{"aweType": 703, "text": text})
+		}
+		sendBody.Reserved_6 = protoUint64(7)
+		sendBody.ContentJson = textJSON
 	}
-	sendBody.ContentJson = textJSON
 
 	msg := &tiktokpb.SendRequest{
 		MessageType:    protoUint64(100),
@@ -282,6 +338,10 @@ func parseSendResponse(body []byte) (string, error) {
 		return "", fmt.Errorf("empty response body")
 	}
 
+	if id, ok := extractSendResponseMessageID(body); ok {
+		return id, nil
+	}
+
 	var resp tiktokpb.SendResponse
 	if err := unmarshalProto(body, &resp); err != nil {
 		return "", fmt.Errorf("decode send response: %w", err)
@@ -295,6 +355,84 @@ func parseSendResponse(body []byte) (string, error) {
 	}
 
 	return "", fmt.Errorf("server-assigned message ID not found in response")
+}
+
+func extractSendResponseMessageID(body []byte) (string, bool) {
+	for _, outerField := range []protowire.Number{6, 8} {
+		if payload, ok := extractLengthDelimitedField(body, outerField); ok {
+			if sendPayload, ok := extractLengthDelimitedField(payload, 100); ok {
+				if id, ok := extractStringOrVarintField(sendPayload, 1); ok {
+					return id, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func extractLengthDelimitedField(data []byte, target protowire.Number) ([]byte, bool) {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return nil, false
+		}
+		data = data[n:]
+		switch typ {
+		case protowire.BytesType:
+			value, m := protowire.ConsumeBytes(data)
+			if m < 0 {
+				return nil, false
+			}
+			if num == target {
+				return value, true
+			}
+			data = data[m:]
+		default:
+			m := protowire.ConsumeFieldValue(num, typ, data)
+			if m < 0 {
+				return nil, false
+			}
+			data = data[m:]
+		}
+	}
+	return nil, false
+}
+
+func extractStringOrVarintField(data []byte, target protowire.Number) (string, bool) {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return "", false
+		}
+		data = data[n:]
+		switch typ {
+		case protowire.BytesType:
+			value, m := protowire.ConsumeBytes(data)
+			if m < 0 {
+				return "", false
+			}
+			if num == target {
+				return string(value), true
+			}
+			data = data[m:]
+		case protowire.VarintType:
+			value, m := protowire.ConsumeVarint(data)
+			if m < 0 {
+				return "", false
+			}
+			if num == target {
+				return strconv.FormatUint(value, 10), true
+			}
+			data = data[m:]
+		default:
+			m := protowire.ConsumeFieldValue(num, typ, data)
+			if m < 0 {
+				return "", false
+			}
+			data = data[m:]
+		}
+	}
+	return "", false
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +664,9 @@ func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
 //  6. Parse the response for the server-assigned message ID (required).
 func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMessageResponse, error) {
 	cookie := c.rIA.Header.Get("Cookie")
+	if p.Image != nil && strings.TrimSpace(p.Text) != "" {
+		return nil, fmt.Errorf("image captions are not supported")
+	}
 
 	universalData, err := c.getMessagesUniversalData()
 	if err != nil {
@@ -560,7 +701,15 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 	// and field 8 of the inner message.
 	clientMsgID := uuid.New().String()
 
-	payload := buildSendPayload(p.ConvID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID, p.Reply)
+	var uploadedImage *uploadedPrivateImage
+	if p.Image != nil {
+		uploadedImage, err = c.uploadImage(ctx, p.Image)
+		if err != nil {
+			return nil, fmt.Errorf("upload image: %w", err)
+		}
+	}
+
+	payload := buildSendPayload(p.ConvID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID, p.Reply, uploadedImage)
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).

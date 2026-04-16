@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +47,25 @@ func readLine(r *bufio.Reader, prompt string) string {
 	fmt.Print(prompt)
 	line, _ := r.ReadString('\n')
 	return strings.TrimSpace(line)
+}
+
+func detectImageMIME(data []byte, fileName string) string {
+	mimeType := http.DetectContentType(data)
+	if strings.HasPrefix(mimeType, "image/") {
+		return mimeType
+	}
+	switch strings.ToLower(filepath.Ext(fileName)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	default:
+		return mimeType
+	}
 }
 
 // ─── formatting ──────────────────────────────────────────────────────────────
@@ -429,7 +450,7 @@ func showConversation(
 		if state.nextCursor != "" {
 			cmds = append(cmds, "[l]oad more")
 		}
-		cmds = append(cmds, "[s]end", "[r]eact", "[b]ack", "[q]uit")
+		cmds = append(cmds, "[s]end", "[i]mage", "[r]eact", "[b]ack", "[q]uit")
 		fmt.Printf("  %s\n", strings.Join(cmds, "   "))
 
 		input := strings.ToLower(readLine(r, "  > "))
@@ -475,6 +496,49 @@ func showConversation(
 				continue
 			}
 			fmt.Printf("  Sent! (ID: %s)\n  Refreshing…\n", res.MessageID)
+			fresh, newCursor, err := client.GetMessages(ctx, &conv, "")
+			if err != nil {
+				fmt.Printf("  Warning: could not refresh: %v\n", err)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			state.messages = fresh
+			state.nextCursor = newCursor
+
+		case "i", "image":
+			fmt.Println()
+			imagePath := readLine(r, "  Image path (empty to cancel): ")
+			if imagePath == "" {
+				continue
+			}
+			imageData, err := os.ReadFile(imagePath)
+			if err != nil {
+				fmt.Printf("  Error reading file: %v\n", err)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			mimeType := detectImageMIME(imageData, imagePath)
+			if !strings.HasPrefix(mimeType, "image/") {
+				fmt.Printf("  %s does not look like an image (detected %q).\n", imagePath, mimeType)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+
+			fmt.Println("  Uploading image…")
+			res, err := client.SendMessage(ctx, libtiktok.SendMessageParams{
+				ConvID: conv.ID,
+				Image: &libtiktok.OutgoingImage{
+					Data:     imageData,
+					FileName: filepath.Base(imagePath),
+					MimeType: mimeType,
+				},
+			})
+			if err != nil {
+				fmt.Printf("  Error: %v\n", err)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			fmt.Printf("  Image sent! (ID: %s)\n  Refreshing…\n", res.MessageID)
 			fresh, newCursor, err := client.GetMessages(ctx, &conv, "")
 			if err != nil {
 				fmt.Printf("  Warning: could not refresh: %v\n", err)
