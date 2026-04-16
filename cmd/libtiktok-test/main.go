@@ -68,6 +68,25 @@ func detectImageMIME(data []byte, fileName string) string {
 	}
 }
 
+func detectVideoMIME(data []byte, fileName string) string {
+	mimeType := http.DetectContentType(data)
+	if strings.HasPrefix(mimeType, "video/") {
+		return mimeType
+	}
+	switch strings.ToLower(filepath.Ext(fileName)) {
+	case ".mp4":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	case ".mov":
+		return "video/quicktime"
+	case ".mkv":
+		return "video/x-matroska"
+	default:
+		return mimeType
+	}
+}
+
 // ─── formatting ──────────────────────────────────────────────────────────────
 
 func fmtTimestamp(tsMs int64) string {
@@ -450,7 +469,7 @@ func showConversation(
 		if state.nextCursor != "" {
 			cmds = append(cmds, "[l]oad more")
 		}
-		cmds = append(cmds, "[s]end", "[i]mage", "[r]eact", "[b]ack", "[q]uit")
+		cmds = append(cmds, "[s]end", "[i]mage", "[v]ideo", "[r]eact", "[b]ack", "[q]uit")
 		fmt.Printf("  %s\n", strings.Join(cmds, "   "))
 
 		input := strings.ToLower(readLine(r, "  > "))
@@ -539,6 +558,49 @@ func showConversation(
 				continue
 			}
 			fmt.Printf("  Image sent! (ID: %s)\n  Refreshing…\n", res.MessageID)
+			fresh, newCursor, err := client.GetMessages(ctx, &conv, "")
+			if err != nil {
+				fmt.Printf("  Warning: could not refresh: %v\n", err)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			state.messages = fresh
+			state.nextCursor = newCursor
+
+		case "v", "video":
+			fmt.Println()
+			videoPath := readLine(r, "  Video path (empty to cancel): ")
+			if videoPath == "" {
+				continue
+			}
+			videoData, err := os.ReadFile(videoPath)
+			if err != nil {
+				fmt.Printf("  Error reading file: %v\n", err)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			mimeType := detectVideoMIME(videoData, videoPath)
+			if !strings.HasPrefix(mimeType, "video/") {
+				fmt.Printf("  %s does not look like a video (detected %q).\n", videoPath, mimeType)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+
+			fmt.Println("  Uploading video…")
+			res, err := client.SendMessage(ctx, libtiktok.SendMessageParams{
+				ConvID: conv.ID,
+				Video: &libtiktok.OutgoingVideo{
+					Data:     videoData,
+					FileName: filepath.Base(videoPath),
+					MimeType: mimeType,
+				},
+			})
+			if err != nil {
+				fmt.Printf("  Error: %v\n", err)
+				readLine(r, "  Press Enter to continue… ")
+				continue
+			}
+			fmt.Printf("  Video sent! (ID: %s)\n  Refreshing…\n", res.MessageID)
 			fresh, newCursor, err := client.GetMessages(ctx, &conv, "")
 			if err != nil {
 				fmt.Printf("  Warning: could not refresh: %v\n", err)

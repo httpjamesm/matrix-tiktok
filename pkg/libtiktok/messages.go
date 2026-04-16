@@ -37,6 +37,9 @@ type SendMessageParams struct {
 	// Image, when non-nil, uploads an encrypted private image and sends the
 	// corresponding private_image payload instead of a text body.
 	Image *OutgoingImage
+	// Video, when non-nil, uploads via VOD and sends a private_video payload.
+	// Image and Video must not both be set.
+	Video *OutgoingVideo
 }
 
 // OutgoingMessageReply carries the TikTok reply envelope for POST /v1/message/send.
@@ -220,7 +223,7 @@ func buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64 string) []metaK
 //	       field 8  client message UUID
 //	       field 11 message_reply when aweType=703 (reply)
 //	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
-func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string, reply *OutgoingMessageReply, image *uploadedPrivateImage) []byte {
+func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string, reply *OutgoingMessageReply, image *uploadedPrivateImage, video *uploadedPrivateVideo) []byte {
 	sendBody := &tiktokpb.SendMessageBody{
 		ConversationId:  protoString(convID),
 		MessageKind:     protoUint64(1),
@@ -289,6 +292,44 @@ func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, c
 				Height:   protoUint64(uint64(image.Height)),
 				Size:     protoUint64(uint64(image.Size)),
 				FileName: protoString(image.FileName),
+			},
+		}
+	} else if video != nil {
+		sendBody.ContentJson = []byte{}
+		sendBody.Reserved_6 = protoUint64(1803)
+		sendBody.MessageSubtype = protoString("private_video")
+		sendBody.Attachment = &tiktokpb.SendAttachmentPayload{
+			PrivateVideo: &tiktokpb.SendPrivateVideoAttachmentPayload{
+				Primary: &tiktokpb.SendPrivateVideoPrimaryAsset{
+					Vid:        protoString(video.Vid),
+					Reserved_2: protoUint64(0),
+					Poster: &tiktokpb.SendPrivateVideoPoster{
+						Uri: protoString(video.PosterURI),
+					},
+					DisplaySize: &tiktokpb.SendMediaSize{
+						Width:  protoUint64(uint64(video.Width)),
+						Height: protoUint64(uint64(video.Height)),
+					},
+				},
+				Metadata: &tiktokpb.SendPrivateVideoMetadataList{
+					Entries: []*tiktokpb.SendPrivateVideoMetadataEntry{
+						{Inner: &tiktokpb.SendPrivateVideoMetadataInner{Vid: protoString(video.Vid)}},
+					},
+				},
+			},
+		}
+		// Field 17 reuses the private-image summary shape for private_video traffic.
+		sendBody.PrivateImage = &tiktokpb.SendPrivateImageAttachmentSummary{
+			Reserved_1: protoUint64(2),
+			Path:       protoString(video.Vid),
+			DecryptKey: protoString(""),
+			FileInfo: &tiktokpb.SendPrivateImageFileInfo{
+				Width:      protoUint64(uint64(video.Width)),
+				Height:     protoUint64(uint64(video.Height)),
+				Reserved_3: protoUint64(uint64(video.DurationMs)),
+				Size:       protoUint64(uint64(video.Size)),
+				FileName:   protoString(video.FileName),
+				VideoCodec: protoString(video.Codec),
 			},
 		}
 	} else {
@@ -664,8 +705,14 @@ func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
 //  6. Parse the response for the server-assigned message ID (required).
 func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMessageResponse, error) {
 	cookie := c.rIA.Header.Get("Cookie")
+	if p.Image != nil && p.Video != nil {
+		return nil, fmt.Errorf("image and video cannot be sent in the same message")
+	}
 	if p.Image != nil && strings.TrimSpace(p.Text) != "" {
 		return nil, fmt.Errorf("image captions are not supported")
+	}
+	if p.Video != nil && strings.TrimSpace(p.Text) != "" {
+		return nil, fmt.Errorf("video captions are not supported")
 	}
 
 	universalData, err := c.getMessagesUniversalData()
@@ -702,14 +749,21 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 	clientMsgID := uuid.New().String()
 
 	var uploadedImage *uploadedPrivateImage
+	var uploadedVideo *uploadedPrivateVideo
 	if p.Image != nil {
 		uploadedImage, err = c.uploadImage(ctx, p.Image)
 		if err != nil {
 			return nil, fmt.Errorf("upload image: %w", err)
 		}
 	}
+	if p.Video != nil {
+		uploadedVideo, err = c.uploadVideo(ctx, p.Video)
+		if err != nil {
+			return nil, fmt.Errorf("upload video: %w", err)
+		}
+	}
 
-	payload := buildSendPayload(p.ConvID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID, p.Reply, uploadedImage)
+	payload := buildSendPayload(p.ConvID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID, p.Reply, uploadedImage, uploadedVideo)
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).

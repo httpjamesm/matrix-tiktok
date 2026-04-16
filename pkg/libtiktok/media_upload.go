@@ -23,10 +23,18 @@ import (
 const (
 	mediaUploadConfigPath = "/v1/media/upload_config"
 	mediaUploadRegion     = "cn-north-1"
-	mediaUploadService    = "imagex"
+	vodUploadSpaceName    = "tiktok-dm"
+	vodAPIVersion         = "2020-11-19"
 )
 
 type OutgoingImage struct {
+	Data     []byte
+	FileName string
+	MimeType string
+}
+
+// OutgoingVideo is a raw video blob uploaded through TikTok VOD (vod-upload host).
+type OutgoingVideo struct {
 	Data     []byte
 	FileName string
 	MimeType string
@@ -38,6 +46,16 @@ type imageUploadConfig struct {
 	AccessKeyID   string
 	SecurityToken string
 	SecretKey     string
+	// AWSServiceName is the SigV4 credential scope service ("imagex" or "vod").
+	// Empty defaults to "imagex".
+	AWSServiceName string
+}
+
+func (cfg *imageUploadConfig) awsServiceForSigning() string {
+	if strings.TrimSpace(cfg.AWSServiceName) != "" {
+		return cfg.AWSServiceName
+	}
+	return "imagex"
 }
 
 type appliedImageUpload struct {
@@ -56,6 +74,18 @@ type uploadedPrivateImage struct {
 	FileName   string
 }
 
+// uploadedPrivateVideo holds VOD identifiers and dimensions after CommitUploadInner.
+type uploadedPrivateVideo struct {
+	Vid        string
+	PosterURI  string
+	Width      int
+	Height     int
+	DurationMs int
+	Size       int
+	FileName   string
+	Codec      string
+}
+
 type orderedQueryParam struct {
 	Key   string
 	Value string
@@ -69,6 +99,16 @@ type imageXSigningProfile struct {
 	IncludeContentSHA256 bool
 }
 
+// applyStoreInfo is a single TOS slice/store row from Apply* upload responses.
+type applyStoreInfo struct {
+	StoreURI string `json:"StoreUri"`
+	Auth     string `json:"Auth"`
+	UploadID string `json:"UploadID"`
+}
+
+// applyImageUploadResponse models ApplyImageUpload and ApplyUploadInner JSON.
+// ImageX fills Result.UploadAddress; VOD inner upload uses Result.InnerUploadAddress
+// with UploadAddress null.
 type applyImageUploadResponse struct {
 	ResponseMetadata struct {
 		RequestID string `json:"RequestId"`
@@ -78,16 +118,56 @@ type applyImageUploadResponse struct {
 		} `json:"Error"`
 	} `json:"ResponseMetadata"`
 	Result struct {
-		UploadAddress struct {
-			StoreInfos []struct {
-				StoreURI string `json:"StoreUri"`
-				Auth     string `json:"Auth"`
-				UploadID string `json:"UploadID"`
-			} `json:"StoreInfos"`
-			UploadHosts []string `json:"UploadHosts"`
-			SessionKey  string   `json:"SessionKey"`
+		UploadAddress *struct {
+			StoreInfos  []applyStoreInfo `json:"StoreInfos"`
+			UploadHosts []string         `json:"UploadHosts"`
+			SessionKey  string           `json:"SessionKey"`
 		} `json:"UploadAddress"`
+		InnerUploadAddress *struct {
+			UploadNodes []applyInnerUploadNode `json:"UploadNodes"`
+		} `json:"InnerUploadAddress"`
 	} `json:"Result"`
+}
+
+type applyInnerUploadNode struct {
+	Vid        string           `json:"Vid"`
+	StoreInfos []applyStoreInfo `json:"StoreInfos"`
+	UploadHost string           `json:"UploadHost"`
+	SessionKey string           `json:"SessionKey"`
+}
+
+func appliedUploadFromApplyResponse(result *applyImageUploadResponse) (*appliedImageUpload, error) {
+	if ua := result.Result.UploadAddress; ua != nil {
+		if len(ua.StoreInfos) > 0 && len(ua.UploadHosts) > 0 && ua.SessionKey != "" {
+			si := ua.StoreInfos[0]
+			if si.StoreURI != "" && si.Auth != "" {
+				return &appliedImageUpload{
+					StoreURI:   si.StoreURI,
+					UploadHost: ua.UploadHosts[0],
+					Auth:       si.Auth,
+					SessionKey: ua.SessionKey,
+				}, nil
+			}
+		}
+	}
+	if inner := result.Result.InnerUploadAddress; inner != nil {
+		for _, node := range inner.UploadNodes {
+			if len(node.StoreInfos) == 0 || node.UploadHost == "" || node.SessionKey == "" {
+				continue
+			}
+			si := node.StoreInfos[0]
+			if si.StoreURI == "" || si.Auth == "" {
+				continue
+			}
+			return &appliedImageUpload{
+				StoreURI:   si.StoreURI,
+				UploadHost: node.UploadHost,
+				Auth:       si.Auth,
+				SessionKey: node.SessionKey,
+			}, nil
+		}
+	}
+	return nil, fmt.Errorf("response missing upload address")
 }
 
 type uploadImageResponse struct {
@@ -105,6 +185,47 @@ type commitImageUploadRequest struct {
 			} `json:"Config"`
 		} `json:"input"`
 	} `json:"Functions"`
+}
+
+type commitVideoUploadRequest struct {
+	SessionKey string                      `json:"SessionKey"`
+	Functions  []commitVideoUploadFunction `json:"Functions"`
+}
+
+type commitVideoUploadFunction struct {
+	Name  string                   `json:"name"`
+	Input commitVideoSnapshotInput `json:"input"`
+}
+
+type commitVideoSnapshotInput struct {
+	SnapshotTime    int  `json:"SnapshotTime"`
+	SkipBlackDetect bool `json:"SkipBlackDetect"`
+}
+
+type commitVideoUploadResponse struct {
+	ResponseMetadata struct {
+		RequestID string `json:"RequestId"`
+		Error     *struct {
+			Code    string `json:"Code"`
+			Message string `json:"Message"`
+		} `json:"Error"`
+	} `json:"ResponseMetadata"`
+	Result struct {
+		Results []struct {
+			Vid       string `json:"Vid"`
+			PosterUri string `json:"PosterUri"`
+			VideoMeta struct {
+				Uri      string  `json:"Uri"`
+				Height   int     `json:"Height"`
+				Width    int     `json:"Width"`
+				Duration float64 `json:"Duration"`
+				Size     int     `json:"Size"`
+				Format   string  `json:"Format"`
+				Codec    string  `json:"Codec"`
+				FileType string  `json:"FileType"`
+			} `json:"VideoMeta"`
+		} `json:"Results"`
+	} `json:"Result"`
 }
 
 type commitImageUploadResponse struct {
@@ -174,6 +295,34 @@ func (c *Client) uploadImage(ctx context.Context, image *OutgoingImage) (*upload
 	return committed, nil
 }
 
+// uploadVideo uploads a video through TikTok DM VOD (ApplyUploadInner / binary upload / CommitUploadInner).
+func (c *Client) uploadVideo(ctx context.Context, video *OutgoingVideo) (*uploadedPrivateVideo, error) {
+	if video == nil {
+		return nil, fmt.Errorf("nil video payload")
+	}
+	if len(video.Data) == 0 {
+		return nil, fmt.Errorf("video payload is empty")
+	}
+
+	cfg, err := c.getVODUploadConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	applied, err := c.applyVideoUpload(ctx, cfg, video)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.uploadImageBytes(ctx, applied, video.Data); err != nil {
+		return nil, err
+	}
+	committed, err := c.commitVideoUpload(ctx, cfg, applied.SessionKey)
+	if err != nil {
+		return nil, err
+	}
+	committed.FileName = normalizedUploadFileName(video.FileName, video.MimeType)
+	return committed, nil
+}
+
 func buildMediaUploadConfigPayload(deviceID, msToken, verifyFP string) []byte {
 	msg := &tiktokpb.MediaUploadConfigRequest{
 		MessageType:    protoUint64(2059),
@@ -194,7 +343,7 @@ func buildMediaUploadConfigPayload(deviceID, msToken, verifyFP string) []byte {
 	return mustMarshalProto(msg)
 }
 
-func (c *Client) getImageUploadConfig(ctx context.Context) (*imageUploadConfig, error) {
+func (c *Client) fetchMediaUploadConfigEntries(ctx context.Context) ([]*tiktokpb.MediaUploadConfigEntry, error) {
 	cookie := c.rIA.Header.Get("Cookie")
 
 	universalData, err := c.getMessagesUniversalData()
@@ -242,7 +391,14 @@ func (c *Client) getImageUploadConfig(ctx context.Context) (*imageUploadConfig, 
 		return nil, fmt.Errorf("decode media upload config: %w", err)
 	}
 
-	entries := cfgResp.GetPayload().GetImagex().GetEntries()
+	return cfgResp.GetPayload().GetImagex().GetEntries(), nil
+}
+
+func (c *Client) getImageUploadConfig(ctx context.Context) (*imageUploadConfig, error) {
+	entries, err := c.fetchMediaUploadConfigEntries(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, entry := range entries {
 		if entry.GetServiceId() == "" || entry.GetHost() == "" || entry.GetAccessKeyId() == "" || entry.GetSecurityToken() == "" || entry.GetSecretAccessKey() == "" {
 			continue
@@ -262,6 +418,32 @@ func (c *Client) getImageUploadConfig(ctx context.Context) (*imageUploadConfig, 
 	return nil, fmt.Errorf("no image upload config found in response")
 }
 
+func (c *Client) getVODUploadConfig(ctx context.Context) (*imageUploadConfig, error) {
+	entries, err := c.fetchMediaUploadConfigEntries(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.GetHost() == "" || entry.GetAccessKeyId() == "" || entry.GetSecurityToken() == "" || entry.GetSecretAccessKey() == "" {
+			continue
+		}
+		host := strings.ToLower(entry.GetHost())
+		if entry.GetUploadKind() != 2 && !strings.Contains(host, "vod-upload") {
+			continue
+		}
+		return &imageUploadConfig{
+			ServiceID:      entry.GetServiceId(),
+			Host:           entry.GetHost(),
+			AccessKeyID:    entry.GetAccessKeyId(),
+			SecurityToken:  entry.GetSecurityToken(),
+			SecretKey:      entry.GetSecretAccessKey(),
+			AWSServiceName: "vod",
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no VOD upload config found in response")
+}
+
 func (c *Client) applyImageUpload(ctx context.Context, cfg *imageUploadConfig, image *OutgoingImage) (*appliedImageUpload, error) {
 	return c.applyImageUploadWithAccessKey(ctx, cfg, image, cfg.AccessKeyID)
 }
@@ -277,7 +459,7 @@ func (c *Client) applyImageUploadWithAccessKey(ctx context.Context, cfg *imageUp
 		{Key: "Version", Value: "2018-08-01"},
 		{Key: "s", Value: randomUploadIdentifier(11)},
 	}
-	rawQuery := buildOrderedQueryString(query)
+	rawQuery := buildSigV4CanonicalQuery(query)
 	var attemptErrors []string
 	for _, profile := range imageXSigningProfiles("GET") {
 		applied, err := c.applyImageUploadWithProfile(ctx, &localCfg, rawQuery, profile)
@@ -332,21 +514,11 @@ func (c *Client) applyImageUploadWithProfile(ctx context.Context, cfg *imageUplo
 		}
 	}
 
-	storeInfo := result.Result.UploadAddress.StoreInfos
-	uploadHosts := result.Result.UploadAddress.UploadHosts
-	if len(storeInfo) == 0 || len(uploadHosts) == 0 || result.Result.UploadAddress.SessionKey == "" {
-		return nil, fmt.Errorf("apply image upload [%s] response missing upload address: %s", profile.Name, strings.TrimSpace(resp.String()))
+	applied, err := appliedUploadFromApplyResponse(&result)
+	if err != nil {
+		return nil, fmt.Errorf("apply image upload [%s] %w: %s", profile.Name, err, strings.TrimSpace(resp.String()))
 	}
-	if storeInfo[0].StoreURI == "" || storeInfo[0].Auth == "" {
-		return nil, fmt.Errorf("apply image upload [%s] response missing store auth: %s", profile.Name, strings.TrimSpace(resp.String()))
-	}
-
-	return &appliedImageUpload{
-		StoreURI:   storeInfo[0].StoreURI,
-		UploadHost: uploadHosts[0],
-		Auth:       storeInfo[0].Auth,
-		SessionKey: result.Result.UploadAddress.SessionKey,
-	}, nil
+	return applied, nil
 }
 
 func (c *Client) uploadImageBytes(ctx context.Context, applied *appliedImageUpload, data []byte) error {
@@ -402,7 +574,7 @@ func (c *Client) commitImageUploadWithAccessKey(ctx context.Context, cfg *imageU
 		{Key: "ServiceId", Value: cfg.ServiceID},
 		{Key: "Version", Value: "2018-08-01"},
 	}
-	rawQuery := buildOrderedQueryString(query)
+	rawQuery := buildSigV4CanonicalQuery(query)
 	var attemptErrors []string
 	for _, profile := range imageXSigningProfiles("POST") {
 		committed, err := c.commitImageUploadWithProfile(ctx, &localCfg, rawQuery, body, profile)
@@ -490,6 +662,183 @@ func (c *Client) commitImageUploadWithProfile(ctx context.Context, cfg *imageUpl
 	return out, nil
 }
 
+func (c *Client) applyVideoUpload(ctx context.Context, cfg *imageUploadConfig, video *OutgoingVideo) (*appliedImageUpload, error) {
+	return c.applyVideoUploadWithAccessKey(ctx, cfg, video, cfg.AccessKeyID)
+}
+
+func (c *Client) applyVideoUploadWithAccessKey(ctx context.Context, cfg *imageUploadConfig, video *OutgoingVideo, accessKeyID string) (*appliedImageUpload, error) {
+	localCfg := *cfg
+	localCfg.AccessKeyID = accessKeyID
+	query := []orderedQueryParam{
+		{Key: "Action", Value: "ApplyUploadInner"},
+		{Key: "Version", Value: vodAPIVersion},
+		{Key: "SpaceName", Value: vodUploadSpaceName},
+		{Key: "FileType", Value: "video"},
+		{Key: "IsInner", Value: "1"},
+		{Key: "FileSize", Value: strconv.Itoa(len(video.Data))},
+		{Key: "s", Value: randomUploadIdentifier(11)},
+	}
+	rawQuery := buildSigV4CanonicalQuery(query)
+	var attemptErrors []string
+	for _, profile := range imageXSigningProfiles("GET") {
+		applied, err := c.applyVideoUploadWithProfile(ctx, &localCfg, rawQuery, profile)
+		if err == nil {
+			return applied, nil
+		}
+		attemptErrors = append(attemptErrors, err.Error())
+		if apiErr, ok := err.(*imageUploadAPIError); ok && isRetryableSignatureProfileError(apiErr.Code) {
+			continue
+		}
+		return nil, err
+	}
+	return nil, fmt.Errorf("apply video upload failed for all signing profiles: %s", strings.Join(attemptErrors, "; "))
+}
+
+func (c *Client) applyVideoUploadWithProfile(ctx context.Context, cfg *imageUploadConfig, rawQuery string, profile imageXSigningProfile) (*appliedImageUpload, error) {
+	contentType := "application/x-www-form-urlencoded; charset=utf-8"
+	amzDate, payloadHash, auth, err := buildMediaAuthorization("GET", cfg.Host, "/", rawQuery, nil, contentType, profile, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	client := newMediaUploadClient()
+	var result applyImageUploadResponse
+	req := client.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/json").
+		SetHeader("Authorization", auth).
+		SetHeader("x-amz-date", amzDate).
+		SetHeader("x-amz-security-token", cfg.SecurityToken).
+		SetResult(&result)
+	if profile.SendContentType || profile.IncludeContentType {
+		req.SetHeader("Content-Type", contentType)
+	}
+	if profile.IncludeContentSHA256 {
+		req.SetHeader("x-amz-content-sha256", payloadHash)
+	}
+	resp, err := req.Get("https://" + cfg.Host + "/?" + rawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("apply video upload [%s]: %w", profile.Name, err)
+	}
+	if resp.IsError() {
+		return nil, fmt.Errorf("apply video upload [%s] returned %d: %s", profile.Name, resp.StatusCode(), resp.String())
+	}
+	if result.ResponseMetadata.Error != nil {
+		return nil, &imageUploadAPIError{
+			Operation: "apply video upload",
+			Profile:   profile.Name,
+			Code:      result.ResponseMetadata.Error.Code,
+			RequestID: result.ResponseMetadata.RequestID,
+			Message:   result.ResponseMetadata.Error.Message,
+		}
+	}
+
+	applied, err := appliedUploadFromApplyResponse(&result)
+	if err != nil {
+		return nil, fmt.Errorf("apply video upload [%s] %w: %s", profile.Name, err, strings.TrimSpace(resp.String()))
+	}
+	return applied, nil
+}
+
+func (c *Client) commitVideoUpload(ctx context.Context, cfg *imageUploadConfig, sessionKey string) (*uploadedPrivateVideo, error) {
+	return c.commitVideoUploadWithAccessKey(ctx, cfg, sessionKey, cfg.AccessKeyID)
+}
+
+func (c *Client) commitVideoUploadWithAccessKey(ctx context.Context, cfg *imageUploadConfig, sessionKey, accessKeyID string) (*uploadedPrivateVideo, error) {
+	localCfg := *cfg
+	localCfg.AccessKeyID = accessKeyID
+	reqBody := commitVideoUploadRequest{SessionKey: sessionKey}
+	reqBody.Functions = []commitVideoUploadFunction{{
+		Name: "Snapshot",
+		Input: commitVideoSnapshotInput{
+			SnapshotTime:    0,
+			SkipBlackDetect: true,
+		},
+	}}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal commit video upload body: %w", err)
+	}
+	query := []orderedQueryParam{
+		{Key: "Action", Value: "CommitUploadInner"},
+		{Key: "Version", Value: vodAPIVersion},
+		{Key: "SpaceName", Value: vodUploadSpaceName},
+	}
+	rawQuery := buildSigV4CanonicalQuery(query)
+	var attemptErrors []string
+	for _, profile := range imageXSigningProfiles("POST") {
+		committed, err := c.commitVideoUploadWithProfile(ctx, &localCfg, rawQuery, body, profile)
+		if err == nil {
+			return committed, nil
+		}
+		attemptErrors = append(attemptErrors, err.Error())
+		if apiErr, ok := err.(*imageUploadAPIError); ok && isRetryableSignatureProfileError(apiErr.Code) {
+			continue
+		}
+		return nil, err
+	}
+	return nil, fmt.Errorf("commit video upload failed for all signing profiles: %s", strings.Join(attemptErrors, "; "))
+}
+
+func (c *Client) commitVideoUploadWithProfile(ctx context.Context, cfg *imageUploadConfig, rawQuery string, body []byte, profile imageXSigningProfile) (*uploadedPrivateVideo, error) {
+	contentType := "application/json"
+	amzDate, payloadHash, auth, err := buildMediaAuthorization("POST", cfg.Host, "/", rawQuery, body, contentType, profile, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	client := newMediaUploadClient()
+	var result commitVideoUploadResponse
+	req := client.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/json").
+		SetHeader("Authorization", auth).
+		SetHeader("x-amz-date", amzDate).
+		SetHeader("x-amz-security-token", cfg.SecurityToken).
+		SetBody(body).
+		SetResult(&result)
+	if profile.SendContentType || profile.IncludeContentType {
+		req.SetHeader("Content-Type", contentType)
+	}
+	if profile.IncludeContentSHA256 {
+		req.SetHeader("x-amz-content-sha256", payloadHash)
+	}
+	resp, err := req.Post("https://" + cfg.Host + "/?" + rawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("commit video upload [%s]: %w", profile.Name, err)
+	}
+	if resp.IsError() {
+		return nil, fmt.Errorf("commit video upload [%s] returned %d: %s", profile.Name, resp.StatusCode(), resp.String())
+	}
+	if result.ResponseMetadata.Error != nil {
+		return nil, &imageUploadAPIError{
+			Operation: "commit video upload",
+			Profile:   profile.Name,
+			Code:      result.ResponseMetadata.Error.Code,
+			RequestID: result.ResponseMetadata.RequestID,
+			Message:   result.ResponseMetadata.Error.Message,
+		}
+	}
+	if len(result.Result.Results) == 0 {
+		return nil, fmt.Errorf("commit video upload [%s] response missing results: %s", profile.Name, strings.TrimSpace(resp.String()))
+	}
+	r0 := result.Result.Results[0]
+	if r0.Vid == "" {
+		return nil, fmt.Errorf("commit video upload response missing Vid")
+	}
+	meta := r0.VideoMeta
+	durationMs := int(meta.Duration*1000.0 + 0.5)
+	return &uploadedPrivateVideo{
+		Vid:        r0.Vid,
+		PosterURI:  r0.PosterUri,
+		Width:      meta.Width,
+		Height:     meta.Height,
+		DurationMs: durationMs,
+		Size:       meta.Size,
+		Codec:      meta.Codec,
+	}, nil
+}
+
 func isRetryableSignatureProfileError(code string) bool {
 	switch strings.TrimSpace(code) {
 	case "SignatureDoesNotMatch", "InvalidAuthorization":
@@ -553,7 +902,7 @@ func buildMediaAuthorization(method, host, canonicalPath, rawQuery string, body 
 		payloadHash,
 	}, "\n")
 
-	scope := dateScope + "/" + mediaUploadRegion + "/" + mediaUploadService + "/aws4_request"
+	scope := dateScope + "/" + mediaUploadRegion + "/" + cfg.awsServiceForSigning() + "/aws4_request"
 	stringToSign := strings.Join([]string{
 		"AWS4-HMAC-SHA256",
 		amzDate,
@@ -563,7 +912,7 @@ func buildMediaAuthorization(method, host, canonicalPath, rawQuery string, body 
 
 	signingKey := hmacSHA256([]byte("AWS4"+cfg.SecretKey), dateScope)
 	signingKey = hmacSHA256(signingKey, mediaUploadRegion)
-	signingKey = hmacSHA256(signingKey, mediaUploadService)
+	signingKey = hmacSHA256(signingKey, cfg.awsServiceForSigning())
 	signingKey = hmacSHA256(signingKey, "aws4_request")
 	signature := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
 
@@ -580,6 +929,19 @@ func buildOrderedQueryString(query []orderedQueryParam) string {
 		parts = append(parts, param.Key+"="+awsPercentEncode(param.Value))
 	}
 	return strings.Join(parts, "&")
+}
+
+// buildSigV4CanonicalQuery returns the query string for the canonical request
+// (AWS Signature V4: sort parameter names by UTF-8 code unit ascending).
+func buildSigV4CanonicalQuery(query []orderedQueryParam) string {
+	if len(query) <= 1 {
+		return buildOrderedQueryString(query)
+	}
+	sorted := append([]orderedQueryParam(nil), query...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Key < sorted[j].Key
+	})
+	return buildOrderedQueryString(sorted)
 }
 
 func awsPercentEncode(s string) string {
@@ -612,6 +974,9 @@ func hmacSHA256(key []byte, data string) []byte {
 func normalizedUploadFileName(fileName, mimeType string) string {
 	fileName = strings.TrimSpace(filepath.Base(fileName))
 	if fileName == "" || fileName == "." || fileName == string(filepath.Separator) {
+		if strings.HasPrefix(mimeType, "video/") {
+			return "video" + normalizedUploadExtension("", mimeType)
+		}
 		return "image" + normalizedUploadExtension("", mimeType)
 	}
 	if filepath.Ext(fileName) == "" {
@@ -634,6 +999,12 @@ func normalizedUploadExtension(fileName, mimeType string) string {
 		return ".gif"
 	case "image/webp":
 		return ".webp"
+	case "video/mp4":
+		return ".mp4"
+	case "video/quicktime":
+		return ".mov"
+	case "video/webm":
+		return ".webm"
 	}
 	if mimeType != "" {
 		if exts, err := mime.ExtensionsByType(mimeType); err == nil && len(exts) > 0 {

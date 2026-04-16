@@ -52,6 +52,7 @@ func TestBuildSendPayloadPrivateImage(t *testing.T) {
 			Size:       211515,
 			FileName:   "example.png",
 		},
+		nil,
 	)
 
 	var req tiktokpb.SendRequest
@@ -77,6 +78,66 @@ func TestBuildSendPayloadPrivateImage(t *testing.T) {
 	}
 	if got := send.GetAttachment().GetPrivateImage().GetMetadata().GetEntries(); len(got) != 1 {
 		t.Fatalf("attachment.private_image.metadata len = %d", len(got))
+	}
+}
+
+func TestBuildSendPayloadPrivateVideo(t *testing.T) {
+	payload := buildSendPayload(
+		"0:1:alice:bob",
+		"",
+		"device-id",
+		"ms-token",
+		"verify-fp",
+		"public-key",
+		"client-message-id",
+		nil,
+		nil,
+		&uploadedPrivateVideo{
+			Vid:        "vid123",
+			PosterURI:  "tos-alisg-p-50234-sg/poster",
+			Width:      1360,
+			Height:     1200,
+			DurationMs: 14100,
+			Size:       1780826,
+			FileName:   "output.mp4",
+			Codec:      "h264",
+		},
+	)
+
+	var req tiktokpb.SendRequest
+	if err := unmarshalProto(payload, &req); err != nil {
+		t.Fatalf("unmarshal send payload: %v", err)
+	}
+
+	send := req.GetPayload().GetSend()
+	if send.GetMessageSubtype() != "private_video" {
+		t.Fatalf("message_subtype = %q", send.GetMessageSubtype())
+	}
+	if send.GetReserved_6() != 1803 {
+		t.Fatalf("reserved_6 = %d", send.GetReserved_6())
+	}
+	if send.GetPrivateImage().GetReserved_1() != 2 {
+		t.Fatalf("summary.reserved_1 = %d", send.GetPrivateImage().GetReserved_1())
+	}
+	if got := send.GetPrivateImage().GetPath(); got != "vid123" {
+		t.Fatalf("summary.path = %q", got)
+	}
+	if send.GetPrivateImage().GetDecryptKey() != "" {
+		t.Fatal("summary.decrypt_key should be empty for video")
+	}
+	fi := send.GetPrivateImage().GetFileInfo()
+	if fi.GetReserved_3() != 14100 || fi.GetSize() != 1780826 || fi.GetVideoCodec() != "h264" {
+		t.Fatalf("file_info = (%d,%d,%q)", fi.GetReserved_3(), fi.GetSize(), fi.GetVideoCodec())
+	}
+	pv := send.GetAttachment().GetPrivateVideo()
+	if pv.GetPrimary().GetVid() != "vid123" {
+		t.Fatalf("attachment.private_video.primary.vid = %q", pv.GetPrimary().GetVid())
+	}
+	if pv.GetPrimary().GetPoster().GetUri() != "tos-alisg-p-50234-sg/poster" {
+		t.Fatalf("poster uri = %q", pv.GetPrimary().GetPoster().GetUri())
+	}
+	if len(pv.GetMetadata().GetEntries()) != 1 || pv.GetMetadata().GetEntries()[0].GetInner().GetVid() != "vid123" {
+		t.Fatal("metadata vid mismatch")
 	}
 }
 

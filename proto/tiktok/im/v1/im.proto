@@ -441,17 +441,50 @@ message SendPrivateImageAttachmentPayload {
   optional SendPrivateImageMetadataList metadata = 200;
 }
 
-message SendAttachmentPayload {
-  optional SendPrivateImageAttachmentPayload private_image = 4;
+// Outbound private video (SendMessageBody.field 13 → attachment.field 5).
+message SendPrivateVideoPoster {
+  optional string uri = 1;
 }
 
-// Compact attachment summary mirrored at field 17 on outbound private-image sends.
+message SendPrivateVideoPrimaryAsset {
+  optional string vid = 1;
+  optional uint64 reserved_2 = 2;
+  optional SendPrivateVideoPoster poster = 3;
+  optional SendMediaSize display_size = 6;
+}
+
+message SendPrivateVideoMetadataInner {
+  optional string vid = 1;
+}
+
+message SendPrivateVideoMetadataEntry {
+  optional SendPrivateVideoMetadataInner inner = 1;
+}
+
+message SendPrivateVideoMetadataList {
+  repeated SendPrivateVideoMetadataEntry entries = 1;
+}
+
+message SendPrivateVideoAttachmentPayload {
+  optional SendPrivateVideoPrimaryAsset primary = 1;
+  optional SendPrivateVideoMetadataList metadata = 200;
+}
+
+message SendAttachmentPayload {
+  optional SendPrivateImageAttachmentPayload private_image = 4;
+  optional SendPrivateVideoAttachmentPayload private_video = 5;
+}
+
+// Compact attachment summary mirrored at field 17 on outbound private-image and private_video sends.
 message SendPrivateImageFileInfo {
   optional uint64 width = 1;
   optional uint64 height = 2;
+  // Observed as duration in milliseconds on private_video sends (e.g. 14100).
   optional uint64 reserved_3 = 3;
   optional uint64 size = 4;
   optional string file_name = 5;
+  // Observed on private_video sends (e.g. "h264").
+  optional string video_codec = 6;
 }
 
 message SendPrivateImageAttachmentSummary {

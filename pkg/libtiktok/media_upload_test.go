@@ -1,6 +1,7 @@
 package libtiktok
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ func TestBuildMediaUploadConfigPayload(t *testing.T) {
 }
 
 func TestBuildMediaAuthorizationIncludesContentHash(t *testing.T) {
-	rawQuery := buildOrderedQueryString([]orderedQueryParam{
+	rawQuery := buildSigV4CanonicalQuery([]orderedQueryParam{
 		{Key: "Action", Value: "ApplyImageUpload"},
 		{Key: "Version", Value: "2018-08-01"},
 		{Key: "ServiceId", Value: "svc"},
@@ -64,6 +65,35 @@ func TestBuildMediaAuthorizationIncludesContentHash(t *testing.T) {
 	}
 	if !strings.Contains(auth, "/aws4_request, SignedHeaders=") {
 		t.Fatalf("auth header missing expected credential scope: %s", auth)
+	}
+	if !strings.Contains(auth, "/imagex/aws4_request") {
+		t.Fatalf("auth header should scope imagex service: %s", auth)
+	}
+}
+
+func TestBuildMediaAuthorizationVODServiceScope(t *testing.T) {
+	rawQuery := buildSigV4CanonicalQuery([]orderedQueryParam{
+		{Key: "Action", Value: "ApplyUploadInner"},
+		{Key: "Version", Value: "2020-11-19"},
+		{Key: "SpaceName", Value: "tiktok-dm"},
+		{Key: "FileType", Value: "video"},
+		{Key: "IsInner", Value: "1"},
+		{Key: "FileSize", Value: "123"},
+		{Key: "s", Value: "abc"},
+	})
+	_, _, auth, err := buildMediaAuthorization("GET", "vod-upload-sg.tiktok.com", "/", rawQuery, nil, "application/x-www-form-urlencoded; charset=utf-8", imageXSigningProfile{
+		Name: "date-token",
+	}, &imageUploadConfig{
+		AccessKeyID:    "AKTP-test",
+		SecurityToken:  "token",
+		SecretKey:      "secret",
+		AWSServiceName: "vod",
+	})
+	if err != nil {
+		t.Fatalf("buildMediaAuthorization: %v", err)
+	}
+	if !strings.Contains(auth, "/vod/aws4_request") {
+		t.Fatalf("auth header should scope vod service: %s", auth)
 	}
 }
 
@@ -94,5 +124,47 @@ func TestBuildOrderedQueryStringPreservesOrder(t *testing.T) {
 	want := "Action=ApplyImageUpload&Version=2018-08-01&ServiceId=svc&FileSize=123"
 	if got != want {
 		t.Fatalf("buildOrderedQueryString() = %q, want %q", got, want)
+	}
+}
+
+func TestAppliedUploadFromApplyResponseInnerUploadAddress(t *testing.T) {
+	const raw = `{
+		"ResponseMetadata":{"RequestId":"req"},
+		"Result":{
+			"UploadAddress":null,
+			"InnerUploadAddress":{"UploadNodes":[{
+				"Vid":"v1",
+				"StoreInfos":[{"StoreUri":"tos/x","Auth":"SpaceKey/...","UploadID":"u1"}],
+				"UploadHost":"tos-my216-up.tiktokcdn.com",
+				"SessionKey":"sess-token"
+			}]}
+		}
+	}`
+	var resp applyImageUploadResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got, err := appliedUploadFromApplyResponse(&resp)
+	if err != nil {
+		t.Fatalf("appliedUploadFromApplyResponse: %v", err)
+	}
+	if got.StoreURI != "tos/x" || got.UploadHost != "tos-my216-up.tiktokcdn.com" || got.Auth == "" || got.SessionKey != "sess-token" {
+		t.Fatalf("unexpected applied: %+v", got)
+	}
+}
+
+func TestBuildSigV4CanonicalQuerySortsByParameterName(t *testing.T) {
+	got := buildSigV4CanonicalQuery([]orderedQueryParam{
+		{Key: "Version", Value: "2020-11-19"},
+		{Key: "Action", Value: "ApplyUploadInner"},
+		{Key: "SpaceName", Value: "tiktok-dm"},
+		{Key: "FileType", Value: "video"},
+		{Key: "IsInner", Value: "1"},
+		{Key: "FileSize", Value: "1780826"},
+		{Key: "s", Value: "xyz"},
+	})
+	want := "Action=ApplyUploadInner&FileSize=1780826&FileType=video&IsInner=1&SpaceName=tiktok-dm&Version=2020-11-19&s=xyz"
+	if got != want {
+		t.Fatalf("buildSigV4CanonicalQuery() = %q, want %q", got, want)
 	}
 }

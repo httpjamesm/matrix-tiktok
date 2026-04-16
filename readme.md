@@ -6,7 +6,8 @@ A Matrix bridge for TikTok Messages. Intended for usage with Beeper.
 
 - [ ] Messages
   - [x] Text
-  - [ ] Images
+  - [x] Images
+  - [x] Videos
   - [ ] Stickers
   - [ ] Voice Notes
   - [x] TikToks

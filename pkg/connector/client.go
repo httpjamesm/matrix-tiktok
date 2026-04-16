@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -20,9 +21,9 @@ import (
 	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 )
 
-// tiktokMatrixImageMaxBytes is advertised in com.beeper.room_features (m.image / m.file)
+// tiktokMatrixMediaMaxBytes is advertised in com.beeper.room_features for media uploads
 // and is a soft cap for clients; TikTok may still reject oversized payloads.
-const tiktokMatrixImageMaxBytes = 50 * 1024 * 1024
+const tiktokMatrixMediaMaxBytes = 50 * 1024 * 1024
 
 // TikTokClient implements bridgev2.NetworkAPI for a single logged-in TikTok session.
 type TikTokClient struct {
@@ -508,9 +509,30 @@ func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *
 		MimeTypes: map[string]event.CapabilitySupportLevel{
 			"image/*": event.CapLevelFullySupported,
 		},
-		// HandleMatrixImageMessage rejects non-empty captions for now.
-		Caption:   event.CapLevelRejected,
-		MaxSize:   tiktokMatrixImageMaxBytes,
+		// handleMatrixImageMessage rejects non-empty captions for now.
+		Caption: event.CapLevelRejected,
+		MaxSize: tiktokMatrixMediaMaxBytes,
+	}
+	videoUpload := &event.FileFeatures{
+		MimeTypes: map[string]event.CapabilitySupportLevel{
+			"video/*":         event.CapLevelFullySupported,
+			"video/mp4":       event.CapLevelFullySupported,
+			"video/quicktime": event.CapLevelFullySupported,
+		},
+		Caption: event.CapLevelRejected,
+		MaxSize: tiktokMatrixMediaMaxBytes,
+	}
+	matrixFileMedia := &event.FileFeatures{
+		MimeTypes: map[string]event.CapabilitySupportLevel{
+			"image/*":          event.CapLevelFullySupported,
+			"video/*":          event.CapLevelFullySupported,
+			"video/mp4":        event.CapLevelFullySupported,
+			"video/webm":       event.CapLevelFullySupported,
+			"video/quicktime":  event.CapLevelFullySupported,
+			"video/x-matroska": event.CapLevelFullySupported,
+		},
+		Caption: event.CapLevelRejected,
+		MaxSize: tiktokMatrixMediaMaxBytes,
 	}
 	return &event.RoomFeatures{
 		MaxTextLength: 1000,
@@ -519,10 +541,11 @@ func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *
 		Delete: event.CapLevelFullySupported,
 		// Rich replies (m.relates_to → TikTok aweType 703).
 		Reply: event.CapLevelFullySupported,
-		// File uploads: many clients send images as m.file; advertise both.
+		// File uploads: many clients send images or videos as m.file; advertise both.
 		File: event.FileFeatureMap{
 			event.MsgImage: imageUpload,
-			event.MsgFile:  imageUpload,
+			event.MsgVideo: videoUpload,
+			event.MsgFile:  matrixFileMedia,
 		},
 	}
 }
@@ -634,11 +657,29 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	if content.MsgType == event.MsgImage {
 		return tc.handleMatrixImageMessage(ctx, msg, &content, reply)
 	}
+	if content.MsgType == event.MsgVideo {
+		return tc.handleMatrixVideoMessage(ctx, msg, &content, reply)
+	}
 	if content.MsgType == event.MsgFile {
-		if content.Info != nil && content.Info.MimeType != "" && !strings.HasPrefix(content.Info.MimeType, "image/") {
+		mimeType := ""
+		if content.Info != nil {
+			mimeType = content.Info.MimeType
+		}
+		switch {
+		case strings.HasPrefix(mimeType, "image/"):
+			return tc.handleMatrixImageMessage(ctx, msg, &content, reply)
+		case strings.HasPrefix(mimeType, "video/"):
+			return tc.handleMatrixVideoMessage(ctx, msg, &content, reply)
+		case mimeType == "":
+			if resp, err := tc.handleMatrixImageMessage(ctx, msg, &content, reply); err == nil {
+				return resp, nil
+			} else if !errors.Is(err, bridgev2.ErrUnsupportedMessageType) {
+				return nil, err
+			}
+			return tc.handleMatrixVideoMessage(ctx, msg, &content, reply)
+		default:
 			return nil, bridgev2.ErrUnsupportedMessageType
 		}
-		return tc.handleMatrixImageMessage(ctx, msg, &content, reply)
 	}
 
 	text, err := matrixToTikTok(&content)
@@ -701,6 +742,54 @@ func (tc *TikTokClient) handleMatrixImageMessage(
 	})
 	if err != nil {
 		return nil, fmt.Errorf("send TikTok image: %w", err)
+	}
+
+	return &bridgev2.MatrixMessageResponse{
+		DB: &database.Message{
+			ID:       networkid.MessageID(resp.MessageID),
+			SenderID: makeUserID(tc.meta.UserID),
+		},
+	}, nil
+}
+
+func (tc *TikTokClient) handleMatrixVideoMessage(
+	ctx context.Context,
+	msg *bridgev2.MatrixMessage,
+	content *event.MessageEventContent,
+	reply *libtiktok.OutgoingMessageReply,
+) (*bridgev2.MatrixMessageResponse, error) {
+	if strings.TrimSpace(content.GetCaption()) != "" {
+		return nil, fmt.Errorf("video captions are not yet supported on TikTok")
+	}
+
+	matrix := tc.userLogin.Bridge.Matrix.BotIntent()
+	data, err := matrix.DownloadMedia(ctx, content.URL, content.File)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", bridgev2.ErrMediaDownloadFailed, err)
+	}
+
+	mimeType := ""
+	if content.Info != nil {
+		mimeType = content.Info.MimeType
+	}
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(mimeType, "video/") {
+		return nil, bridgev2.ErrUnsupportedMessageType
+	}
+
+	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
+		ConvID: string(msg.Portal.ID),
+		Reply:  reply,
+		Video: &libtiktok.OutgoingVideo{
+			Data:     data,
+			FileName: content.GetFileName(),
+			MimeType: mimeType,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("send TikTok video: %w", err)
 	}
 
 	return &bridgev2.MatrixMessageResponse{
