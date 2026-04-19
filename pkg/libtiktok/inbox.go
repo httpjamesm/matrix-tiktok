@@ -15,6 +15,8 @@ type Conversation struct {
 	ID           string   // 0:1:X:Y
 	SourceID     uint64   // 5: from get_by_user_init
 	Participants []string // user IDs
+	// ConversationType is the wire conversation_type value: 1 for DMs, 2 for group chats.
+	ConversationType uint64
 }
 
 type Message struct {
@@ -292,6 +294,9 @@ func mergeInboxConversations(existing, incoming []Conversation) []Conversation {
 		if idx, ok := indexByID[conv.ID]; ok {
 			if existing[idx].SourceID == 0 {
 				existing[idx].SourceID = conv.SourceID
+			}
+			if conv.ConversationType != 0 {
+				existing[idx].ConversationType = conv.ConversationType
 			}
 			if len(conv.Participants) > 0 {
 				seenParticipants := make(map[string]struct{}, len(existing[idx].Participants))

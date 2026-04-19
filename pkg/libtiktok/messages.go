@@ -31,8 +31,12 @@ const (
 
 // SendMessageParams holds the parameters for sending a message.
 type SendMessageParams struct {
-	ConvID string
-	Text   string
+	ConvID       string
+	ConvSourceID uint64
+	Text         string
+	// IsGroup indicates the target conversation is a group chat, which requires
+	// message_kind=2 in the send payload. DMs use message_kind=1.
+	IsGroup bool
 	// Reply, when non-nil, sends aweType 703 with protobuf field 11 (message_reply).
 	Reply *OutgoingMessageReply
 	// Image, when non-nil, uploads an encrypted private image and sends the
@@ -224,11 +228,15 @@ func buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64 string) []metaK
 //	       field 8  client message UUID
 //	       field 11 message_reply when aweType=703 (reply)
 //	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
-func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string, reply *OutgoingMessageReply, image *uploadedPrivateImage, video *uploadedPrivateVideo) []byte {
+func buildSendPayload(convID string, convSourceID uint64, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string, isGroup bool, reply *OutgoingMessageReply, image *uploadedPrivateImage, video *uploadedPrivateVideo) []byte {
+	messageKind := uint64(1)
+	if isGroup {
+		messageKind = 2
+	}
 	sendBody := &tiktokpb.SendMessageBody{
 		ConversationId:  protoString(convID),
-		MessageKind:     protoUint64(1),
-		Reserved_3:      protoUint64(0),
+		MessageKind:     protoUint64(messageKind),
+		Reserved_3:      protoUint64(convSourceID),
 		Deprecated:      protoString("deprecated"),
 		ClientMessageId: protoString(clientMsgID),
 		Tags: []*tiktokpb.MetadataTag{
@@ -342,13 +350,20 @@ func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, c
 		sendBody.ContentJson = textJSON
 	}
 
+	subCommand := protoUint64(10009)
+	reserved6 := protoUint64(0)
+	if isGroup {
+		subCommand = protoUint64(10014)
+		reserved6 = protoUint64(1)
+	}
+
 	msg := &tiktokpb.SendRequest{
 		MessageType:    protoUint64(100),
-		SubCommand:     protoUint64(10007),
+		SubCommand:     subCommand,
 		ClientVersion:  protoString("1.6.0"),
 		Options:        emptyProtoMessage(),
 		PlatformFlag:   protoUint64(3),
-		Reserved_6:     protoUint64(0),
+		Reserved_6:     reserved6,
 		GitHash:        protoString(""),
 		DeviceId:       protoString(deviceID),
 		ClientPlatform: protoString("web"),
@@ -358,6 +373,8 @@ func buildSendPayload(convID, text, deviceID, msToken, verifyFP, publicKeyB64, c
 			Send: sendBody,
 		},
 	}
+
+	fmt.Println(msg)
 
 	return mustMarshalProto(msg)
 }
@@ -802,7 +819,7 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 		}
 	}
 
-	payload := buildSendPayload(p.ConvID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID, p.Reply, uploadedImage, uploadedVideo)
+	payload := buildSendPayload(p.ConvID, p.ConvSourceID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID, p.IsGroup, p.Reply, uploadedImage, uploadedVideo)
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).

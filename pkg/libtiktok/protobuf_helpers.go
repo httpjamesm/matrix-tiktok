@@ -122,9 +122,10 @@ func parseConversationEntryProto(entry *tiktokpb.InboxConversationEntry) (Conver
 	}
 
 	return Conversation{
-		ID:           convID,
-		SourceID:     sourceID,
-		Participants: participants,
+		ID:               convID,
+		SourceID:         sourceID,
+		Participants:     participants,
+		ConversationType: entry.GetConversationType(),
 	}, nil
 }
 
@@ -137,6 +138,11 @@ func parseConversationDetailProto(detail *tiktokpb.InboxConversationDetail) (Con
 	sourceID := detail.GetSourceId()
 	if sourceID == 0 {
 		sourceID = detail.GetCore().GetSourceId()
+	}
+
+	conversationType := detail.GetConversationType()
+	if conversationType == 0 {
+		conversationType = detail.GetCore().GetConversationType()
 	}
 
 	participants := make([]string, 0, len(detail.GetMembers().GetEntries()))
@@ -154,8 +160,9 @@ func parseConversationDetailProto(detail *tiktokpb.InboxConversationDetail) (Con
 	}
 
 	return Conversation{
-		ID:           convID,
-		SourceID:     sourceID,
-		Participants: participants,
+		ID:               convID,
+		SourceID:         sourceID,
+		Participants:     participants,
+		ConversationType: conversationType,
 	}, nil
 }

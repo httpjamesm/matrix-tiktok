@@ -505,9 +505,12 @@ func showConversation(
 				continue
 			}
 			fmt.Println("  Sending…")
+			fmt.Println(conv.ConversationType)
 			res, err := client.SendMessage(ctx, libtiktok.SendMessageParams{
-				ConvID: conv.ID,
-				Text:   msgText,
+				ConvID:       conv.ID,
+				ConvSourceID: conv.SourceID,
+				Text:         msgText,
+				IsGroup:      conv.ConversationType == 2,
 			})
 			if err != nil {
 				fmt.Printf("  Error: %v\n", err)
@@ -545,7 +548,9 @@ func showConversation(
 
 			fmt.Println("  Uploading image…")
 			res, err := client.SendMessage(ctx, libtiktok.SendMessageParams{
-				ConvID: conv.ID,
+				ConvID:       conv.ID,
+				ConvSourceID: conv.SourceID,
+				IsGroup:      conv.ConversationType == 2,
 				Image: &libtiktok.OutgoingImage{
 					Data:     imageData,
 					FileName: filepath.Base(imagePath),
@@ -588,7 +593,9 @@ func showConversation(
 
 			fmt.Println("  Uploading video…")
 			res, err := client.SendMessage(ctx, libtiktok.SendMessageParams{
-				ConvID: conv.ID,
+				ConvID:       conv.ID,
+				ConvSourceID: conv.SourceID,
+				IsGroup:      conv.ConversationType == 2,
 				Video: &libtiktok.OutgoingVideo{
 					Data:     videoData,
 					FileName: filepath.Base(videoPath),

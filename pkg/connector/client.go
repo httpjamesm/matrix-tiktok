@@ -654,11 +654,17 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	content.RemoveReplyFallback()
 
 	reply := tc.buildOutgoingReply(log, msg)
+
+	conv, err := tc.getConversationForPortal(ctx, msg.Portal)
+	if err != nil {
+		return nil, err
+	}
+
 	if content.MsgType == event.MsgImage {
-		return tc.handleMatrixImageMessage(ctx, msg, &content, reply)
+		return tc.handleMatrixImageMessage(ctx, msg, conv, &content, reply)
 	}
 	if content.MsgType == event.MsgVideo {
-		return tc.handleMatrixVideoMessage(ctx, msg, &content, reply)
+		return tc.handleMatrixVideoMessage(ctx, msg, conv, &content, reply)
 	}
 	if content.MsgType == event.MsgFile {
 		mimeType := ""
@@ -667,16 +673,16 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 		}
 		switch {
 		case strings.HasPrefix(mimeType, "image/"):
-			return tc.handleMatrixImageMessage(ctx, msg, &content, reply)
+			return tc.handleMatrixImageMessage(ctx, msg, conv, &content, reply)
 		case strings.HasPrefix(mimeType, "video/"):
-			return tc.handleMatrixVideoMessage(ctx, msg, &content, reply)
+			return tc.handleMatrixVideoMessage(ctx, msg, conv, &content, reply)
 		case mimeType == "":
-			if resp, err := tc.handleMatrixImageMessage(ctx, msg, &content, reply); err == nil {
+			if resp, err := tc.handleMatrixImageMessage(ctx, msg, conv, &content, reply); err == nil {
 				return resp, nil
 			} else if !errors.Is(err, bridgev2.ErrUnsupportedMessageType) {
 				return nil, err
 			}
-			return tc.handleMatrixVideoMessage(ctx, msg, &content, reply)
+			return tc.handleMatrixVideoMessage(ctx, msg, conv, &content, reply)
 		default:
 			return nil, bridgev2.ErrUnsupportedMessageType
 		}
@@ -688,9 +694,11 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	}
 
 	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
-		ConvID: string(msg.Portal.ID),
-		Text:   text,
-		Reply:  reply,
+		ConvID:       conv.ID,
+		ConvSourceID: conv.SourceID,
+		Text:         text,
+		IsGroup:      tc.isGroupChat(msg.Portal),
+		Reply:        reply,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("send TikTok message: %w", err)
@@ -707,6 +715,7 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 func (tc *TikTokClient) handleMatrixImageMessage(
 	ctx context.Context,
 	msg *bridgev2.MatrixMessage,
+	conv *libtiktok.Conversation,
 	content *event.MessageEventContent,
 	reply *libtiktok.OutgoingMessageReply,
 ) (*bridgev2.MatrixMessageResponse, error) {
@@ -732,8 +741,10 @@ func (tc *TikTokClient) handleMatrixImageMessage(
 	}
 
 	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
-		ConvID: string(msg.Portal.ID),
-		Reply:  reply,
+		ConvID:       conv.ID,
+		ConvSourceID: conv.SourceID,
+		IsGroup:      tc.isGroupChat(msg.Portal),
+		Reply:        reply,
 		Image: &libtiktok.OutgoingImage{
 			Data:     data,
 			FileName: content.GetFileName(),
@@ -755,6 +766,7 @@ func (tc *TikTokClient) handleMatrixImageMessage(
 func (tc *TikTokClient) handleMatrixVideoMessage(
 	ctx context.Context,
 	msg *bridgev2.MatrixMessage,
+	conv *libtiktok.Conversation,
 	content *event.MessageEventContent,
 	reply *libtiktok.OutgoingMessageReply,
 ) (*bridgev2.MatrixMessageResponse, error) {
@@ -780,8 +792,10 @@ func (tc *TikTokClient) handleMatrixVideoMessage(
 	}
 
 	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
-		ConvID: string(msg.Portal.ID),
-		Reply:  reply,
+		ConvID:       conv.ID,
+		ConvSourceID: conv.SourceID,
+		IsGroup:      tc.isGroupChat(msg.Portal),
+		Reply:        reply,
 		Video: &libtiktok.OutgoingVideo{
 			Data:     data,
 			FileName: content.GetFileName(),
@@ -999,8 +1013,9 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 		}
 		if meta.SourceID != 0 {
 			return &libtiktok.Conversation{
-				ID:       convID,
-				SourceID: meta.SourceID,
+				ID:               convID,
+				SourceID:         meta.SourceID,
+				ConversationType: meta.ConversationType,
 			}, nil
 		}
 	}
@@ -1020,6 +1035,7 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 		}
 		meta.ConversationID = convs[i].ID
 		meta.SourceID = convs[i].SourceID
+		meta.ConversationType = convs[i].ConversationType
 		if err := portal.Save(ctx); err != nil {
 			return nil, fmt.Errorf("cache TikTok portal metadata: %w", err)
 		}
@@ -1031,3 +1047,11 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 }
 
 func ptrInt(v int) *int { return &v }
+
+// isGroupChat returns true if the portal's persisted metadata indicates a group
+// chat (ConversationType == 2). Returns false for DMs or when metadata is
+// unavailable.
+func (tc *TikTokClient) isGroupChat(portal *bridgev2.Portal) bool {
+	meta, _ := portal.Metadata.(*PortalMetadata)
+	return meta != nil && meta.ConversationType == 2
+}

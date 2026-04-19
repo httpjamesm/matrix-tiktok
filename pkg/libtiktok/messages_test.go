@@ -37,12 +37,14 @@ func TestBuildReplyReferenceJSON(t *testing.T) {
 func TestBuildSendPayloadPrivateImage(t *testing.T) {
 	payload := buildSendPayload(
 		"0:1:alice:bob",
+		0,
 		"",
 		"device-id",
 		"ms-token",
 		"verify-fp",
 		"public-key",
 		"client-message-id",
+		false,
 		nil,
 		&uploadedPrivateImage{
 			URI:        "tos-alisg-i/example/image",
@@ -84,12 +86,14 @@ func TestBuildSendPayloadPrivateImage(t *testing.T) {
 func TestBuildSendPayloadPrivateVideo(t *testing.T) {
 	payload := buildSendPayload(
 		"0:1:alice:bob",
+		0,
 		"",
 		"device-id",
 		"ms-token",
 		"verify-fp",
 		"public-key",
 		"client-message-id",
+		false,
 		nil,
 		nil,
 		&uploadedPrivateVideo{
@@ -138,6 +142,54 @@ func TestBuildSendPayloadPrivateVideo(t *testing.T) {
 	}
 	if len(pv.GetMetadata().GetEntries()) != 1 || pv.GetMetadata().GetEntries()[0].GetInner().GetVid() != "vid123" {
 		t.Fatal("metadata vid mismatch")
+	}
+}
+
+func TestBuildSendPayloadMessageKind(t *testing.T) {
+	// DM: isGroup=false → message_kind should be 1
+	dmPayload := buildSendPayload(
+		"0:1:alice:bob",
+		0,
+		"hello",
+		"device-id",
+		"ms-token",
+		"verify-fp",
+		"public-key",
+		"client-message-id",
+		false,
+		nil,
+		nil,
+		nil,
+	)
+	var dmReq tiktokpb.SendRequest
+	if err := unmarshalProto(dmPayload, &dmReq); err != nil {
+		t.Fatalf("unmarshal DM payload: %v", err)
+	}
+	if dmReq.GetPayload().GetSend().GetMessageKind() != 1 {
+		t.Fatalf("DM message_kind = %d, want 1", dmReq.GetPayload().GetSend().GetMessageKind())
+	}
+
+	// Group: isGroup=true → message_kind should be 2
+	groupPayload := buildSendPayload(
+		"7587998693467750664",
+		0,
+		"hello group",
+		"device-id",
+		"ms-token",
+		"verify-fp",
+		"public-key",
+		"client-message-id",
+		true,
+		nil,
+		nil,
+		nil,
+	)
+	var groupReq tiktokpb.SendRequest
+	if err := unmarshalProto(groupPayload, &groupReq); err != nil {
+		t.Fatalf("unmarshal group payload: %v", err)
+	}
+	if groupReq.GetPayload().GetSend().GetMessageKind() != 2 {
+		t.Fatalf("group message_kind = %d, want 2", groupReq.GetPayload().GetSend().GetMessageKind())
 	}
 }
 
