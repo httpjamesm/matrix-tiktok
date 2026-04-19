@@ -516,6 +516,9 @@ const (
 type SendReactionParams struct {
 	// ConvID is the conversation ID (e.g. "0:1:X:Y").
 	ConvID string
+	// IsGroup indicates a group chat; the set_property envelope must set
+	// reserved_6=1 (DMs use 0).
+	IsGroup bool
 	// Emoji is the raw emoji character to react with; the "e:" prefix is added
 	// internally. Example: "❤️"
 	Emoji string
@@ -548,7 +551,7 @@ type DeleteMessageParams struct {
 //	  └─ field 8 → { field 705 → reaction wrapper }
 //	       field 1  → inner reaction message
 //	           field 1  conversation ID
-//	           field 2  1 (action flag)
+//	           field 2  action_flag: 1 (DM), 2 (group)
 //	           field 3  ConvoSourceID
 //	           field 4  ServerMessageID
 //	           field 5  s:client_message_id UUID
@@ -556,13 +559,23 @@ type DeleteMessageParams struct {
 //	       field 2  "deprecated"
 //	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
 func buildReactionPayload(p SendReactionParams, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string) []byte {
+	reserved6 := protoUint64(0)
+	if p.IsGroup {
+		reserved6 = protoUint64(1)
+	}
+
+	actionFlag := protoUint64(1)
+	if p.IsGroup {
+		actionFlag = protoUint64(2)
+	}
+
 	msg := &tiktokpb.ReactionRequest{
 		MessageType:    protoUint64(705),
 		SubCommand:     protoUint64(10008),
 		ClientVersion:  protoString("1.6.0"),
 		Options:        emptyProtoMessage(),
 		PlatformFlag:   protoUint64(3),
-		Reserved_6:     protoUint64(0),
+		Reserved_6:     reserved6,
 		GitHash:        protoString(""),
 		DeviceId:       protoString(deviceID),
 		ClientPlatform: protoString("web"),
@@ -573,7 +586,7 @@ func buildReactionPayload(p SendReactionParams, deviceID, msToken, verifyFP, pub
 				Deprecated: protoString("deprecated"),
 				Body: &tiktokpb.ReactionBody{
 					ConversationId:  protoString(p.ConvID),
-					ActionFlag:      protoUint64(1),
+					ActionFlag:      actionFlag,
 					SourceId:        protoUint64(p.ConvoSourceID),
 					ServerMessageId: protoUint64(p.ServerMessageID),
 					ClientMessageId: protoString(clientMsgID),

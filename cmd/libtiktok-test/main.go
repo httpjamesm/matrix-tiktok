@@ -657,6 +657,7 @@ func showConversation(
 			fmt.Println("  Sending reaction…")
 			err = client.SendReaction(ctx, libtiktok.SendReactionParams{
 				ConvID:          conv.ID,
+				IsGroup:         conv.ConversationType == 2,
 				Emoji:           emoji,
 				Action:          action,
 				SelfUserID:      selfID,

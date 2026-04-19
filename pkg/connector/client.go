@@ -697,7 +697,7 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 		ConvID:       conv.ID,
 		ConvSourceID: conv.SourceID,
 		Text:         text,
-		IsGroup:      tc.isGroupChat(msg.Portal),
+		IsGroup:      conv.ConversationType == 2,
 		Reply:        reply,
 	})
 	if err != nil {
@@ -743,7 +743,7 @@ func (tc *TikTokClient) handleMatrixImageMessage(
 	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
 		ConvID:       conv.ID,
 		ConvSourceID: conv.SourceID,
-		IsGroup:      tc.isGroupChat(msg.Portal),
+		IsGroup:      conv.ConversationType == 2,
 		Reply:        reply,
 		Image: &libtiktok.OutgoingImage{
 			Data:     data,
@@ -794,7 +794,7 @@ func (tc *TikTokClient) handleMatrixVideoMessage(
 	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
 		ConvID:       conv.ID,
 		ConvSourceID: conv.SourceID,
-		IsGroup:      tc.isGroupChat(msg.Portal),
+		IsGroup:      conv.ConversationType == 2,
 		Reply:        reply,
 		Video: &libtiktok.OutgoingVideo{
 			Data:     data,
@@ -938,6 +938,7 @@ func (tc *TikTokClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.
 
 	err = tc.apiClient.SendReaction(ctx, libtiktok.SendReactionParams{
 		ConvID:          conv.ID,
+		IsGroup:         conv.ConversationType == 2,
 		Emoji:           emoji,
 		Action:          libtiktok.ReactionAdd,
 		SelfUserID:      tc.meta.UserID,
@@ -977,6 +978,7 @@ func (tc *TikTokClient) HandleMatrixReactionRemove(ctx context.Context, msg *bri
 
 	err = tc.apiClient.SendReaction(ctx, libtiktok.SendReactionParams{
 		ConvID:          conv.ID,
+		IsGroup:         conv.ConversationType == 2,
 		Emoji:           emoji,
 		Action:          libtiktok.ReactionRemove,
 		SelfUserID:      tc.meta.UserID,
@@ -1011,7 +1013,11 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 		if meta.ConversationID != "" {
 			convID = meta.ConversationID
 		}
-		if meta.SourceID != 0 {
+		// Require conversation_type before skipping the inbox fetch. Older bridge
+		// versions cached source_id only; those portals stayed at type 0 in RAM
+		// even after the DB row gained conversation_type:2, so group flags
+		// (reactions, send envelope) were wrong until the next full metadata refresh.
+		if meta.SourceID != 0 && meta.ConversationType != 0 {
 			return &libtiktok.Conversation{
 				ID:               convID,
 				SourceID:         meta.SourceID,
@@ -1047,11 +1053,3 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 }
 
 func ptrInt(v int) *int { return &v }
-
-// isGroupChat returns true if the portal's persisted metadata indicates a group
-// chat (ConversationType == 2). Returns false for DMs or when metadata is
-// unavailable.
-func (tc *TikTokClient) isGroupChat(portal *bridgev2.Portal) bool {
-	meta, _ := portal.Metadata.(*PortalMetadata)
-	return meta != nil && meta.ConversationType == 2
-}
