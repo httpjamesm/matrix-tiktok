@@ -9,7 +9,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-const DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+const DefaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
 type Client struct {
 	// r is the client for www.tiktok.com
@@ -99,13 +99,13 @@ func extractUniversalData(body string) (string, error) {
 func NewClient(cookieString string) *Client {
 	r := resty.New()
 	r.SetHeader("Cookie", cookieString)
-	r.SetHeader("User-Agent", DEFAULT_USER_AGENT)
+	r.SetHeader("User-Agent", DefaultUserAgent)
 	r.SetHeader("Accept-Language", "en-US,en;q=0.9")
 	r.SetBaseURL("https://www.tiktok.com")
 
 	rIA := resty.New()
 	rIA.SetHeader("Cookie", cookieString)
-	rIA.SetHeader("User-Agent", DEFAULT_USER_AGENT)
+	rIA.SetHeader("User-Agent", DefaultUserAgent)
 	rIA.SetHeader("Accept-Language", "en-US,en;q=0.9")
 	rIA.SetHeader("Referer", "https://www.tiktok.com/")
 	rIA.SetBaseURL("https://im-api-sg.tiktok.com")

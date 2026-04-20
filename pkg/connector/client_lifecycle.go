@@ -1,0 +1,148 @@
+package connector
+
+import (
+	"context"
+	"time"
+
+	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix/bridgev2/status"
+)
+
+// Connect validates the TikTok session, performs a one-time REST backfill to
+// catch up on recent messages, then starts the WebSocket loop for real-time
+// delivery. Errors are reported via BridgeState rather than returned
+// (mautrix-go March 2025 convention).
+func (tc *TikTokClient) Connect(ctx context.Context) {
+	log := zerolog.Ctx(ctx)
+
+	if _, err := tc.apiClient.GetSelf(ctx); err != nil {
+		tc.userLogin.BridgeState.Send(status.BridgeState{
+			StateEvent: status.StateBadCredentials,
+			Error:      "tiktok-auth-error",
+			Message:    "TikTok session is no longer valid — please log in again",
+			Info:       map[string]any{"go_error": err.Error()},
+		})
+		return
+	}
+
+	log.Info().
+		Str("user_id", tc.meta.UserID).
+		Str("username", tc.meta.Username).
+		Msg("TikTok session validated, performing initial backfill")
+
+	// One-time history backfill via REST: catches up on recent messages and
+	// populates the otherUsers cache so GetChatInfo works immediately.
+	// The WebSocket only delivers events that arrive after it connects, so
+	// this ensures nothing is missed during startup.
+	if err := tc.fetchAndDispatch(ctx); err != nil {
+		log.Warn().Err(err).Msg("Initial REST backfill failed, proceeding to WebSocket anyway")
+	}
+
+	tc.isConnected = true
+	tc.userLogin.BridgeState.Send(status.BridgeState{
+		StateEvent: status.StateConnected,
+	})
+
+	// Fresh background context so the loop outlives the Connect call's context.
+	loopCtx, cancel := context.WithCancel(context.Background())
+	tc.stopLoop = cancel
+	go tc.wsLoop(loopCtx)
+}
+
+// Disconnect stops the WebSocket loop.
+func (tc *TikTokClient) Disconnect() {
+	if tc.stopLoop != nil {
+		tc.stopLoop()
+		tc.stopLoop = nil
+	}
+	tc.isConnected = false
+}
+
+// IsLoggedIn returns the cached connection state. Must not do IO.
+func (tc *TikTokClient) IsLoggedIn() bool {
+	return tc.isConnected
+}
+
+// LogoutRemote is a no-op — the unofficial TikTok API has no logout endpoint.
+func (tc *TikTokClient) LogoutRemote(_ context.Context) {}
+
+// wsLoop dials the TikTok IM WebSocket and dispatches incoming chat events
+// until ctx is cancelled. On disconnect it waits with exponential back-off
+// before reconnecting so that transient server errors do not cause a tight
+// reconnect storm.
+func (tc *TikTokClient) wsLoop(ctx context.Context) {
+	log := tc.userLogin.Log.With().Str("component", "tiktok-ws").Logger()
+	ctx = log.WithContext(ctx)
+
+	log.Info().Msg("Starting TikTok IM WebSocket loop")
+	defer log.Info().Msg("TikTok IM WebSocket loop stopped")
+
+	backoff := 5 * time.Second
+	const maxBackoff = 5 * time.Minute
+
+	for {
+		ch, err := tc.apiClient.ConnectWebSocket(ctx)
+		if err != nil {
+			log.Err(err).Dur("retry_in", backoff).Msg("WebSocket dial failed, will retry")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
+		}
+		backoff = 5 * time.Second
+
+		log.Info().Msg("WebSocket connected, listening for messages")
+
+		for evt := range ch {
+			switch {
+			case evt.Message != nil:
+				wsMsg := evt.Message
+				log.Debug().
+					Str("conv_id", wsMsg.Conversation.ID).
+					Str("sender_id", wsMsg.Message.SenderID).
+					Str("type", wsMsg.Message.Type).
+					Uint64("server_id", wsMsg.Message.ServerID).
+					Msg("WS event: chat message")
+				if wsMsg.Message.SenderID != tc.meta.UserID {
+					tc.mu.Lock()
+					tc.otherUsers[wsMsg.Conversation.ID] = wsMsg.Message.SenderID
+					tc.mu.Unlock()
+				}
+				tc.dispatchMessage(&wsMsg.Conversation, wsMsg.Message)
+			case evt.Reaction != nil:
+				r := evt.Reaction
+				log.Info().
+					Str("conv_id", r.ConversationID).
+					Uint64("server_message_id", r.ServerMessageID).
+					Str("sender_user_id", r.SenderUserID).
+					Int("modifications", len(r.Modifications)).
+					Msg("WS event: reaction property update")
+				tc.dispatchWSReaction(evt.Reaction)
+			case evt.Deletion != nil:
+				d := evt.Deletion
+				log.Info().
+					Str("conv_id", d.ConversationID).
+					Uint64("deleted_message_id", d.DeletedMessageID).
+					Str("deleter_user_id", d.DeleterUserID).
+					Bool("only_for_me", d.OnlyForMe).
+					Msg("WS event: message deleted on TikTok")
+				tc.dispatchWSMessageDeletion(d)
+			default:
+				log.Warn().Msg("WS event: received event with nil Message, Reaction, and Deletion")
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			log.Warn().Dur("retry_in", backoff).Msg("WebSocket disconnected, reconnecting")
+		}
+	}
+}

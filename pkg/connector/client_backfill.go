@@ -1,0 +1,446 @@
+package connector
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/bridgev2/simplevent"
+	"maunium.net/go/mautrix/event"
+
+	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
+)
+
+func portalMeta(portal *bridgev2.Portal) (*PortalMetadata, bool) {
+	if portal == nil {
+		return nil, false
+	}
+	meta, ok := portal.Metadata.(*PortalMetadata)
+	return meta, ok && meta != nil
+}
+
+func ensurePortalMeta(log zerolog.Logger, portal *bridgev2.Portal) *PortalMetadata {
+	if portal == nil {
+		return nil
+	}
+	if meta, ok := portalMeta(portal); ok {
+		return meta
+	}
+	if portal.Metadata != nil {
+		log.Error().
+			Str("portal_id", string(portal.ID)).
+			Str("metadata_type", fmt.Sprintf("%T", portal.Metadata)).
+			Msg("Unexpected portal metadata type; resetting TikTok portal metadata")
+	}
+	meta := &PortalMetadata{}
+	portal.Metadata = meta
+	return meta
+}
+
+func mergePortalMetadata(meta *PortalMetadata, conv *libtiktok.Conversation) bool {
+	if meta == nil || conv == nil {
+		return false
+	}
+	changed := false
+	if meta.ConversationID != conv.ID {
+		meta.ConversationID = conv.ID
+		changed = true
+	}
+	if meta.SourceID != conv.SourceID {
+		meta.SourceID = conv.SourceID
+		changed = true
+	}
+	if meta.GroupName != conv.Name {
+		meta.GroupName = conv.Name
+		changed = true
+	}
+	if meta.ConversationType != conv.ConversationType {
+		meta.ConversationType = conv.ConversationType
+		changed = true
+	}
+	if conv.Muted != nil && !equalBoolPtr(meta.Muted, conv.Muted) {
+		meta.Muted = conv.Muted
+		changed = true
+	}
+	return changed
+}
+
+func mergePortalGroupName(meta *PortalMetadata, groupName string) bool {
+	if meta == nil || meta.GroupName == groupName {
+		return false
+	}
+	meta.GroupName = groupName
+	return true
+}
+
+func (tc *TikTokClient) buildGroupChatInfo(conv *libtiktok.Conversation) *bridgev2.ChatInfo {
+	if conv == nil || conv.ConversationType != 2 || conv.Name == "" {
+		return nil
+	}
+	name := conv.Name
+	return &bridgev2.ChatInfo{
+		Name:      &name,
+		UserLocal: userLocalPortalInfoFromMuted(conv.Muted),
+		ExtraUpdates: func(ctx context.Context, portal *bridgev2.Portal) bool {
+			return mergePortalMetadata(ensurePortalMeta(*zerolog.Ctx(ctx), portal), conv)
+		},
+	}
+}
+
+func (tc *TikTokClient) queueGroupNameUpdate(conv *libtiktok.Conversation) {
+	info := tc.buildGroupChatInfo(conv)
+	if info == nil {
+		return
+	}
+	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.ChatInfoChange{
+		EventMeta: simplevent.EventMeta{
+			Type: bridgev2.RemoteEventChatInfoChange,
+			LogContext: func(c zerolog.Context) zerolog.Context {
+				return c.
+					Str("conversation_id", conv.ID).
+					Str("group_name", conv.Name)
+			},
+			PortalKey: networkid.PortalKey{
+				ID:       makePortalID(conv.ID),
+				Receiver: tc.userLogin.ID,
+			},
+			Sender: bridgev2.EventSender{
+				IsFromMe: true,
+				Sender:   makeUserID(tc.meta.UserID),
+			},
+			Timestamp: time.Now(),
+		},
+		ChatInfoChange: &bridgev2.ChatInfoChange{
+			ChatInfo: info,
+		},
+	})
+}
+
+// fetchAndDispatch is called once on Connect to backfill recent messages via
+// the REST API before the WebSocket takes over. It walks each inbox
+// conversation and queues any unseen messages into the bridgev2 event pipeline,
+// also populating the otherUsers cache so GetChatInfo works immediately.
+//
+// Deduplication relies on two layers:
+//  1. The in-memory lastSeen map suppresses re-dispatches within a process lifetime.
+//  2. The bridge database deduplicates by message ID across restarts.
+func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
+	log := zerolog.Ctx(ctx)
+
+	convs, err := tc.apiClient.GetInbox(ctx)
+	if err != nil {
+		return fmt.Errorf("get inbox: %w", err)
+	}
+
+	log.Info().Int("conversations", len(convs)).Msg("Inbox fetched")
+	if len(convs) == 0 {
+		log.Info().Msg("Inbox is empty — no conversations to process")
+		return nil
+	}
+
+	for i := range convs {
+		conv := &convs[i]
+		log.Info().
+			Str("conv_id", conv.ID).
+			Strs("participants", conv.Participants).
+			Str("name", conv.Name).
+			Uint64("source_id", conv.SourceID).
+			Msg("Processing conversation")
+
+		if conv.Name != "" {
+			tc.mu.Lock()
+			tc.groupNames[conv.ID] = conv.Name
+			tc.mu.Unlock()
+			tc.queueGroupNameUpdate(conv)
+		}
+
+		for _, pid := range conv.Participants {
+			if pid != tc.meta.UserID {
+				tc.mu.Lock()
+				tc.otherUsers[conv.ID] = pid
+				tc.mu.Unlock()
+				log.Info().
+					Str("conv_id", conv.ID).
+					Str("other_user_id", pid).
+					Str("self_user_id", tc.meta.UserID).
+					Msg("Identified other participant")
+				break
+			}
+		}
+		if err := tc.syncPortalMetadata(ctx, conv); err != nil {
+			log.Err(err).Str("conv_id", conv.ID).Msg("Failed to persist portal metadata for conversation")
+			continue
+		}
+
+		tc.mu.Lock()
+		lastSeen := tc.lastSeen[conv.ID]
+		tc.mu.Unlock()
+
+		msgs, _, err := tc.apiClient.GetMessages(ctx, conv, "")
+		if err != nil {
+			log.Err(err).Str("conv_id", conv.ID).Msg("Error fetching messages for conversation")
+			continue
+		}
+
+		log.Info().
+			Str("conv_id", conv.ID).
+			Int("messages", len(msgs)).
+			Int64("last_seen_ms", lastSeen).
+			Msg("Fetched messages for conversation")
+
+		var dispatched int
+		for _, msg := range msgs {
+			log.Info().
+				Str("conv_id", conv.ID).
+				Uint64("msg_id", msg.ServerID).
+				Str("sender_id", msg.SenderID).
+				Str("type", msg.Type).
+				Int64("ts_ms", msg.TimestampMs).
+				Int64("last_seen_ms", lastSeen).
+				Bool("skipped", msg.TimestampMs <= lastSeen).
+				Msg("Considering message")
+
+			if msg.TimestampMs <= lastSeen {
+				continue
+			}
+			tc.dispatchMessage(conv, msg)
+			dispatched++
+			if msg.TimestampMs > lastSeen {
+				lastSeen = msg.TimestampMs
+			}
+		}
+
+		log.Info().
+			Str("conv_id", conv.ID).
+			Int("dispatched", dispatched).
+			Msg("Finished processing conversation")
+
+		tc.mu.Lock()
+		if lastSeen > tc.lastSeen[conv.ID] {
+			tc.lastSeen[conv.ID] = lastSeen
+		}
+		tc.mu.Unlock()
+	}
+	return nil
+}
+
+// IsThisUser reports whether the given remote user ID belongs to this login.
+func (tc *TikTokClient) IsThisUser(_ context.Context, userID networkid.UserID) bool {
+	return makeUserID(tc.meta.UserID) == userID
+}
+
+// GetCapabilities returns the Matrix room feature-set for this login.
+func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *event.RoomFeatures {
+	imageUpload := &event.FileFeatures{
+		MimeTypes: map[string]event.CapabilitySupportLevel{
+			"image/*": event.CapLevelFullySupported,
+		},
+		Caption: event.CapLevelRejected,
+		MaxSize: tiktokMatrixMediaMaxBytes,
+	}
+	videoUpload := &event.FileFeatures{
+		MimeTypes: map[string]event.CapabilitySupportLevel{
+			"video/*":         event.CapLevelFullySupported,
+			"video/mp4":       event.CapLevelFullySupported,
+			"video/quicktime": event.CapLevelFullySupported,
+		},
+		Caption: event.CapLevelRejected,
+		MaxSize: tiktokMatrixMediaMaxBytes,
+	}
+	matrixFileMedia := &event.FileFeatures{
+		MimeTypes: map[string]event.CapabilitySupportLevel{
+			"image/*":          event.CapLevelFullySupported,
+			"video/*":          event.CapLevelFullySupported,
+			"video/mp4":        event.CapLevelFullySupported,
+			"video/webm":       event.CapLevelFullySupported,
+			"video/quicktime":  event.CapLevelFullySupported,
+			"video/x-matroska": event.CapLevelFullySupported,
+		},
+		Caption: event.CapLevelRejected,
+		MaxSize: tiktokMatrixMediaMaxBytes,
+	}
+	return &event.RoomFeatures{
+		MaxTextLength: 1000,
+		Delete:        event.CapLevelFullySupported,
+		Reply:         event.CapLevelFullySupported,
+		File: event.FileFeatureMap{
+			event.MsgImage: imageUpload,
+			event.MsgVideo: videoUpload,
+			event.MsgFile:  matrixFileMedia,
+		},
+	}
+}
+
+// GetChatInfo returns Matrix room metadata for a bridged TikTok conversation.
+// For DMs, the other participant is read from the in-memory otherUsers cache
+// populated during fetchAndDispatch. If the conversation hasn't been seen yet
+// (e.g. a portal is being reconstructed from the database on startup), the
+// portal ID is used as a placeholder and the room will refresh on the next poll.
+func (tc *TikTokClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	meta, _ := portalMeta(portal)
+	if meta == nil || meta.ConversationType == 0 {
+		if _, err := tc.getConversationForPortal(ctx, portal); err != nil && (meta == nil || meta.ConversationType == 0) {
+			return nil, fmt.Errorf("load TikTok chat info for %s: %w", portal.ID, err)
+		}
+		meta, _ = portalMeta(portal)
+	}
+
+	tc.mu.Lock()
+	groupName := tc.groupNames[string(portal.ID)]
+	tc.mu.Unlock()
+
+	otherUserID := string(portal.OtherUserID)
+	if otherUserID == "" {
+		tc.mu.Lock()
+		otherUserID = tc.otherUsers[string(portal.ID)]
+		tc.mu.Unlock()
+	}
+	if groupName == "" && meta != nil {
+		groupName = meta.GroupName
+	}
+
+	isGroup := meta != nil && meta.ConversationType == 2
+	isDM := meta != nil && meta.ConversationType == 1 && otherUserID != ""
+
+	members := []bridgev2.ChatMember{{
+		EventSender: bridgev2.EventSender{
+			IsFromMe: true,
+			Sender:   makeUserID(tc.meta.UserID),
+		},
+		Membership: event.MembershipJoin,
+		PowerLevel: ptrInt(50),
+	}}
+	if otherUserID != "" {
+		members = append(members, bridgev2.ChatMember{
+			EventSender: bridgev2.EventSender{
+				Sender: makeUserID(otherUserID),
+			},
+			Membership: event.MembershipJoin,
+			PowerLevel: ptrInt(50),
+		})
+	}
+
+	info := &bridgev2.ChatInfo{
+		Members: &bridgev2.ChatMemberList{
+			IsFull:  true,
+			Members: members,
+		},
+	}
+	if meta != nil {
+		info.UserLocal = userLocalPortalInfoFromMuted(meta.Muted)
+	}
+	if isDM {
+		roomType := database.RoomTypeDM
+		info.Type = &roomType
+		info.Members.OtherUserID = makeUserID(otherUserID)
+	}
+	if isGroup && groupName != "" {
+		info.Name = &groupName
+		info.ExtraUpdates = func(ctx context.Context, portal *bridgev2.Portal) bool {
+			return mergePortalGroupName(ensurePortalMeta(*zerolog.Ctx(ctx), portal), groupName)
+		}
+	}
+	return info, nil
+}
+
+func (tc *TikTokClient) updatePortalMetadata(portal *bridgev2.Portal, conv *libtiktok.Conversation) bool {
+	if portal == nil || conv == nil {
+		return false
+	}
+	log := zerolog.Nop()
+	if tc.userLogin != nil {
+		log = tc.userLogin.Log
+	}
+	meta := ensurePortalMeta(log, portal)
+	changed := mergePortalMetadata(meta, conv)
+
+	otherUserID := ""
+	for _, pid := range conv.Participants {
+		if pid != "" && pid != tc.meta.UserID {
+			otherUserID = pid
+			break
+		}
+	}
+
+	wantRoomType := database.RoomTypeDefault
+	if conv.ConversationType == 1 {
+		wantRoomType = database.RoomTypeDM
+	}
+	if portal.RoomType != wantRoomType {
+		portal.RoomType = wantRoomType
+		changed = true
+	}
+
+	wantOtherUserID := networkid.UserID("")
+	if conv.ConversationType == 1 {
+		wantOtherUserID = makeUserID(otherUserID)
+	}
+	if portal.OtherUserID != wantOtherUserID {
+		portal.OtherUserID = wantOtherUserID
+		changed = true
+	}
+	return changed
+}
+
+func (tc *TikTokClient) syncPortalMetadata(ctx context.Context, conv *libtiktok.Conversation) error {
+	portal, err := tc.userLogin.Bridge.GetPortalByKey(ctx, networkid.PortalKey{
+		ID:       makePortalID(conv.ID),
+		Receiver: tc.userLogin.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("get portal for metadata sync: %w", err)
+	}
+	if tc.updatePortalMetadata(portal, conv) {
+		if err := portal.Save(ctx); err != nil {
+			return fmt.Errorf("save portal metadata: %w", err)
+		}
+	}
+	tc.applyPortalMuteState(ctx, portal, conv.Muted)
+	return nil
+}
+
+func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *bridgev2.Portal) (*libtiktok.Conversation, error) {
+	convID := string(portal.ID)
+	meta, metaOK := portalMeta(portal)
+	if metaOK {
+		if meta.ConversationID != "" {
+			convID = meta.ConversationID
+		}
+		// Require conversation_type before skipping the inbox fetch. Older bridge
+		// versions cached source_id only; those portals stayed at type 0 in RAM
+		// even after the DB row gained conversation_type:2, so group flags
+		// (reactions, send envelope) were wrong until the next full metadata refresh.
+		if meta.SourceID != 0 && meta.ConversationType != 0 {
+			return &libtiktok.Conversation{
+				ID:               convID,
+				SourceID:         meta.SourceID,
+				Name:             meta.GroupName,
+				ConversationType: meta.ConversationType,
+				Muted:            meta.Muted,
+			}, nil
+		}
+	}
+
+	convs, err := tc.apiClient.GetInbox(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get TikTok inbox for conversation lookup: %w", err)
+	}
+	for i := range convs {
+		if convs[i].ID != convID {
+			continue
+		}
+
+		if tc.updatePortalMetadata(portal, &convs[i]) {
+			if err := portal.Save(ctx); err != nil {
+				return nil, fmt.Errorf("cache TikTok portal metadata: %w", err)
+			}
+		}
+		return &convs[i], nil
+	}
+
+	return nil, fmt.Errorf("TikTok conversation %q not found in inbox", convID)
+}

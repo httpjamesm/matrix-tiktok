@@ -6,3 +6,4 @@ config.toml
 config.yaml
 /logs/
 *.mp4
+.cursor/

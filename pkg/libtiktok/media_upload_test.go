@@ -18,7 +18,10 @@ func TestNormalizedUploadFileName(t *testing.T) {
 }
 
 func TestBuildMediaUploadConfigPayload(t *testing.T) {
-	payload := buildMediaUploadConfigPayload("device-id", "ms-token", "verify-fp")
+	payload, err := buildMediaUploadConfigPayload("device-id", "ms-token", "verify-fp")
+	if err != nil {
+		t.Fatalf("buildMediaUploadConfigPayload: %v", err)
+	}
 
 	var req tiktokpb.MediaUploadConfigRequest
 	if err := unmarshalProto(payload, &req); err != nil {

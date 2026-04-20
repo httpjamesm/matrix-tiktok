@@ -323,7 +323,7 @@ func (c *Client) uploadVideo(ctx context.Context, video *OutgoingVideo) (*upload
 	return committed, nil
 }
 
-func buildMediaUploadConfigPayload(deviceID, msToken, verifyFP string) []byte {
+func buildMediaUploadConfigPayload(deviceID, msToken, verifyFP string) ([]byte, error) {
 	msg := &tiktokpb.MediaUploadConfigRequest{
 		MessageType:    protoUint64(2059),
 		SubCommand:     protoUint64(10007),
@@ -340,7 +340,7 @@ func buildMediaUploadConfigPayload(deviceID, msToken, verifyFP string) []byte {
 			Imagex: protoString(""),
 		},
 	}
-	return mustMarshalProto(msg)
+	return marshalProto(msg)
 }
 
 func (c *Client) fetchMediaUploadConfigEntries(ctx context.Context) ([]*tiktokpb.MediaUploadConfigEntry, error) {
@@ -361,7 +361,10 @@ func (c *Client) fetchMediaUploadConfigEntries(ctx context.Context) ([]*tiktokpb
 
 	msToken := extractCookie(cookie, "msToken")
 	verifyFP := extractCookie(cookie, "s_v_web_id")
-	payload := buildMediaUploadConfigPayload(deviceID, msToken, verifyFP)
+	payload, err := buildMediaUploadConfigPayload(deviceID, msToken, verifyFP)
+	if err != nil {
+		return nil, fmt.Errorf("build media upload config payload: %w", err)
+	}
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).
@@ -861,7 +864,7 @@ func imageXSigningProfiles(method string) []imageXSigningProfile {
 
 func newMediaUploadClient() *resty.Client {
 	c := resty.New()
-	c.SetHeader("User-Agent", DEFAULT_USER_AGENT)
+	c.SetHeader("User-Agent", DefaultUserAgent)
 	c.SetHeader("Accept-Language", "en-US,en;q=0.9")
 	return c
 }

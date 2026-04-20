@@ -297,7 +297,9 @@ func tryParseWSDeleteForEveryone(chat *tiktokpb.WebsocketChat, detail *tiktokpb.
 			hasRecallUID = true
 			deleter = string(tag.GetValue())
 		case "s:server_message_id":
-			deletedMsgID, _ = strconv.ParseUint(string(tag.GetValue()), 10, 64)
+			if parsed, err := strconv.ParseUint(string(tag.GetValue()), 10, 64); err == nil {
+				deletedMsgID = parsed
+			}
 		}
 	}
 	if !hasRecallUID {
@@ -518,7 +520,9 @@ func (c *Client) tryParseReactionFromTags(ctx context.Context, convID string, ta
 
 	serverMsgID := prop.ServerMessageId
 	if serverMsgID == 0 && serverMsgIDStr != "" {
-		serverMsgID, _ = strconv.ParseUint(serverMsgIDStr, 10, 64)
+		if parsed, err := strconv.ParseUint(serverMsgIDStr, 10, 64); err == nil {
+			serverMsgID = parsed
+		}
 	}
 
 	mods := deduplicateModifications(prop.Modifys)
@@ -621,7 +625,9 @@ func (c *Client) parsePropertyUpdateEvent(ctx context.Context, env *tiktokpb.Web
 
 	serverMsgID := prop.ServerMessageId
 	if serverMsgID == 0 && serverMsgIDStr != "" {
-		serverMsgID, _ = strconv.ParseUint(serverMsgIDStr, 10, 64)
+		if parsed, err := strconv.ParseUint(serverMsgIDStr, 10, 64); err == nil {
+			serverMsgID = parsed
+		}
 	}
 
 	mods := deduplicateModifications(prop.Modifys)
@@ -727,7 +733,7 @@ func (c *Client) ConnectWebSocket(ctx context.Context) (<-chan WSEvent, error) {
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			"Cookie":     {cookie},
-			"User-Agent": {DEFAULT_USER_AGENT},
+			"User-Agent": {DefaultUserAgent},
 			"Origin":     {"https://www.tiktok.com"},
 			"Referer":    {"https://www.tiktok.com/"},
 		},

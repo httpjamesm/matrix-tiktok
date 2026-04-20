@@ -35,7 +35,7 @@ func TestBuildReplyReferenceJSON(t *testing.T) {
 }
 
 func TestBuildSendPayloadPrivateImage(t *testing.T) {
-	payload := buildSendPayload(
+	payload, err := buildSendPayload(
 		"0:1:alice:bob",
 		0,
 		"",
@@ -57,6 +57,9 @@ func TestBuildSendPayloadPrivateImage(t *testing.T) {
 		nil,
 	)
 
+	if err != nil {
+		t.Fatalf("buildSendPayload: %v", err)
+	}
 	var req tiktokpb.SendRequest
 	if err := unmarshalProto(payload, &req); err != nil {
 		t.Fatalf("unmarshal send payload: %v", err)
@@ -84,7 +87,7 @@ func TestBuildSendPayloadPrivateImage(t *testing.T) {
 }
 
 func TestBuildSendPayloadPrivateVideo(t *testing.T) {
-	payload := buildSendPayload(
+	payload, err := buildSendPayload(
 		"0:1:alice:bob",
 		0,
 		"",
@@ -108,6 +111,9 @@ func TestBuildSendPayloadPrivateVideo(t *testing.T) {
 		},
 	)
 
+	if err != nil {
+		t.Fatalf("buildSendPayload: %v", err)
+	}
 	var req tiktokpb.SendRequest
 	if err := unmarshalProto(payload, &req); err != nil {
 		t.Fatalf("unmarshal send payload: %v", err)
@@ -147,7 +153,7 @@ func TestBuildSendPayloadPrivateVideo(t *testing.T) {
 
 func TestBuildSendPayloadMessageKind(t *testing.T) {
 	// DM: isGroup=false → message_kind should be 1
-	dmPayload := buildSendPayload(
+	dmPayload, err := buildSendPayload(
 		"0:1:alice:bob",
 		0,
 		"hello",
@@ -161,6 +167,9 @@ func TestBuildSendPayloadMessageKind(t *testing.T) {
 		nil,
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("buildSendPayload DM: %v", err)
+	}
 	var dmReq tiktokpb.SendRequest
 	if err := unmarshalProto(dmPayload, &dmReq); err != nil {
 		t.Fatalf("unmarshal DM payload: %v", err)
@@ -170,7 +179,7 @@ func TestBuildSendPayloadMessageKind(t *testing.T) {
 	}
 
 	// Group: isGroup=true → message_kind should be 2
-	groupPayload := buildSendPayload(
+	groupPayload, err := buildSendPayload(
 		"7587998693467750664",
 		0,
 		"hello group",
@@ -184,6 +193,9 @@ func TestBuildSendPayloadMessageKind(t *testing.T) {
 		nil,
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("buildSendPayload group: %v", err)
+	}
 	var groupReq tiktokpb.SendRequest
 	if err := unmarshalProto(groupPayload, &groupReq); err != nil {
 		t.Fatalf("unmarshal group payload: %v", err)
@@ -194,7 +206,7 @@ func TestBuildSendPayloadMessageKind(t *testing.T) {
 }
 
 func TestParseSendResponseStringMessageID(t *testing.T) {
-	resp := mustMarshalProto(&tiktokpb.SendResponse{
+	resp := mustMarshalProto(t, &tiktokpb.SendResponse{
 		Primary: &tiktokpb.SendResponsePayload{
 			Send: &tiktokpb.SendResponseBody{
 				MessageId: protoString("0471405060961842560"),

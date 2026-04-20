@@ -31,6 +31,9 @@ func (c *Client) GetSelf(ctx context.Context) (*Self, error) {
 	uid, _ := user["uid"].(string)
 	uniqueID, _ := user["uniqueId"].(string)
 	nickname, _ := user["nickName"].(string)
+	if uid == "" || uniqueID == "" {
+		return nil, fmt.Errorf("user fields missing uid or uniqueId")
+	}
 
 	var avatarURL string
 	if avatarURIs, ok := user["avatarUri"].([]any); ok && len(avatarURIs) > 0 {

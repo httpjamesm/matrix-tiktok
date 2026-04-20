@@ -166,20 +166,26 @@ func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (m
 	switch int(aweTypeF) {
 	case 0, 700, 703:
 		msgType = "text"
-		text, _ = content["text"].(string)
+		if value, ok := content["text"].(string); ok {
+			text = value
+		}
 	case 800:
 		msgType = "video"
-		if itemID, _ := content["itemId"].(string); itemID != "" {
-			if uid, _ := content["uid"].(string); uid != "" {
+		if itemID, ok := content["itemId"].(string); ok && itemID != "" {
+			if uid, ok := content["uid"].(string); ok && uid != "" {
 				if user, err := c.GetUser(ctx, uid); err == nil && user.UniqueID != "" {
 					mediaURL = "https://www.tiktok.com/@" + user.UniqueID + "/video/" + itemID
 				}
 			}
 		}
-		text, _ = content["content_title"].(string)
+		if value, ok := content["content_title"].(string); ok {
+			text = value
+		}
 	default:
 		msgType = fmt.Sprintf("type_%d", int(aweTypeF))
-		text, _ = content["text"].(string)
+		if value, ok := content["text"].(string); ok {
+			text = value
+		}
 		zerolog.Ctx(ctx).Warn().
 			Int("awe_type", int(aweTypeF)).
 			RawJSON("content", contentBytes).
@@ -238,7 +244,7 @@ func buildMetadata(deviceID, msToken, verifyFP string) []metaKV {
 		{"browser_platform", "MacIntel"},
 		{"browser_name", "Mozilla"},
 		// The web client mirrors the full UA string here, not just the version token.
-		{"browser_version", DEFAULT_USER_AGENT},
+		{"browser_version", DefaultUserAgent},
 		{"browser_online", "true"},
 	}
 	if verifyFP != "" {
@@ -256,7 +262,7 @@ func buildMetadata(deviceID, msToken, verifyFP string) []metaKV {
 		metaKV{"data_collection_enabled", "true"},
 		metaKV{"from_appID", imAID},
 		metaKV{"locale", "en"},
-		metaKV{"user_agent", DEFAULT_USER_AGENT},
+		metaKV{"user_agent", DefaultUserAgent},
 	)
 	if msToken != "" {
 		pairs = append(pairs, metaKV{"Web-Sdk-Ms-Token", msToken})
@@ -264,7 +270,7 @@ func buildMetadata(deviceID, msToken, verifyFP string) []metaKV {
 	return pairs
 }
 
-func buildInboxPayload(deviceID, msToken, verifyFP string, subCommand uint64) []byte {
+func buildInboxPayload(deviceID, msToken, verifyFP string, subCommand uint64) ([]byte, error) {
 	reserved6 := uint64(1)
 	if subCommand == 10006 {
 		reserved6 = 0
@@ -292,7 +298,7 @@ func buildInboxPayload(deviceID, msToken, verifyFP string, subCommand uint64) []
 		},
 	}
 
-	return mustMarshalProto(msg)
+	return marshalProto(msg)
 }
 
 func mergeInboxConversations(existing, incoming []Conversation) []Conversation {
@@ -392,7 +398,10 @@ func parseInboxResponse(body []byte) ([]Conversation, error) {
 }
 
 func (c *Client) fetchInbox(ctx context.Context, deviceID, msToken, verifyFP string, subCommand uint64) ([]Conversation, error) {
-	payload := buildInboxPayload(deviceID, msToken, verifyFP, subCommand)
+	payload, err := buildInboxPayload(deviceID, msToken, verifyFP, subCommand)
+	if err != nil {
+		return nil, fmt.Errorf("build inbox payload for subcommand %d: %w", subCommand, err)
+	}
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).
@@ -447,7 +456,7 @@ func (c *Client) GetInbox(ctx context.Context) ([]Conversation, error) {
 	}
 	deviceID, ok := appContext["wid"].(string)
 	if !ok {
-		return nil, fmt.Errorf("failed to access wid: %w", err)
+		return nil, fmt.Errorf("failed to access wid from appContext")
 	}
 
 	msToken := extractCookie(cookie, "msToken")
@@ -472,7 +481,7 @@ func (c *Client) GetInbox(ctx context.Context) ([]Conversation, error) {
 // for the get_by_conversation endpoint. sourceID is the uint64 from field 5 of
 // the conversation entry (Conversation.SourceID); cursorTsUs is the microsecond
 // timestamp cursor from field 25 of the last seen message (0 for the first page).
-func buildGetByConversationPayload(deviceID, msToken, verifyFP, convID string, sourceID uint64, count int, cursorTsUs uint64) []byte {
+func buildGetByConversationPayload(deviceID, msToken, verifyFP, convID string, sourceID uint64, count int, cursorTsUs uint64) ([]byte, error) {
 	msg := &tiktokpb.GetByConversationRequest{
 		MessageType:    protoUint64(301),
 		SubCommand:     protoUint64(1),
@@ -496,7 +505,7 @@ func buildGetByConversationPayload(deviceID, msToken, verifyFP, convID string, s
 		},
 	}
 
-	return mustMarshalProto(msg)
+	return marshalProto(msg)
 }
 
 // parseMessageEntry decodes a single message entry from the response.
@@ -656,10 +665,16 @@ func (c *Client) GetMessages(ctx context.Context, conv *Conversation, cursor str
 
 	var cursorTsUs uint64
 	if cursor != "" {
-		cursorTsUs, _ = strconv.ParseUint(cursor, 10, 64)
+		cursorTsUs, err = strconv.ParseUint(cursor, 10, 64)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse cursor %q: %w", cursor, err)
+		}
 	}
 
-	payload := buildGetByConversationPayload(deviceID, msToken, verifyFP, conv.ID, conv.SourceID, 20, cursorTsUs)
+	payload, err := buildGetByConversationPayload(deviceID, msToken, verifyFP, conv.ID, conv.SourceID, 20, cursorTsUs)
+	if err != nil {
+		return nil, "", fmt.Errorf("build get_by_conversation payload: %w", err)
+	}
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).

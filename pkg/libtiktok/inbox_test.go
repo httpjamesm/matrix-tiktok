@@ -133,7 +133,7 @@ func TestParseConversationDetailProto_MutedConversationState(t *testing.T) {
 }
 
 func TestParseInboxResponse_GroupSummaryEntry(t *testing.T) {
-	body := mustMarshalProto(&tiktokpb.InboxResponse{
+	body := mustMarshalProto(t, &tiktokpb.InboxResponse{
 		MessageType: protoUint64(203),
 		SubCommand:  protoUint64(10002),
 		Status:      protoUint64(0),
@@ -179,7 +179,7 @@ func TestParseInboxResponse_GroupSummaryEntry(t *testing.T) {
 }
 
 func TestParseInboxResponse_PrefersConversationDetails(t *testing.T) {
-	body := mustMarshalProto(&tiktokpb.InboxResponse{
+	body := mustMarshalProto(t, &tiktokpb.InboxResponse{
 		MessageType: protoUint64(203),
 		SubCommand:  protoUint64(10002),
 		Status:      protoUint64(0),
@@ -253,7 +253,7 @@ func TestParseInboxResponse_PrefersConversationDetails(t *testing.T) {
 }
 
 func TestParseInboxResponse_MergesDetailAndLegacyEntries(t *testing.T) {
-	body := mustMarshalProto(&tiktokpb.InboxResponse{
+	body := mustMarshalProto(t, &tiktokpb.InboxResponse{
 		MessageType: protoUint64(203),
 		SubCommand:  protoUint64(10006),
 		Status:      protoUint64(0),
@@ -341,7 +341,10 @@ func TestMergeInboxConversations(t *testing.T) {
 }
 
 func TestBuildInboxPayloadMatchesObservedGroupChatVariant(t *testing.T) {
-	payload := buildInboxPayload(syntheticDeviceID, "ms-token", "verify-fp", 10002)
+	payload, err := buildInboxPayload(syntheticDeviceID, "ms-token", "verify-fp", 10002)
+	if err != nil {
+		t.Fatalf("buildInboxPayload: %v", err)
+	}
 
 	var req tiktokpb.InboxRequest
 	if err := unmarshalProto(payload, &req); err != nil {
@@ -370,10 +373,10 @@ func TestBuildInboxPayloadMatchesObservedGroupChatVariant(t *testing.T) {
 	if got := metadataValue(metadata, "referer"); got != "https://www.tiktok.com/messages" {
 		t.Fatalf("referer = %q", got)
 	}
-	if got := metadataValue(metadata, "browser_version"); got != DEFAULT_USER_AGENT {
+	if got := metadataValue(metadata, "browser_version"); got != DefaultUserAgent {
 		t.Fatalf("browser_version = %q", got)
 	}
-	if got := metadataValue(metadata, "user_agent"); got != DEFAULT_USER_AGENT {
+	if got := metadataValue(metadata, "user_agent"); got != DefaultUserAgent {
 		t.Fatalf("user_agent = %q", got)
 	}
 	if got := metadataValue(metadata, "verifyFp"); got != "verify-fp" {
@@ -385,7 +388,10 @@ func TestBuildInboxPayloadMatchesObservedGroupChatVariant(t *testing.T) {
 }
 
 func TestBuildInboxPayloadSupportsNormalConversationVariant(t *testing.T) {
-	payload := buildInboxPayload(syntheticDeviceID, "ms-token", "verify-fp", 10006)
+	payload, err := buildInboxPayload(syntheticDeviceID, "ms-token", "verify-fp", 10006)
+	if err != nil {
+		t.Fatalf("buildInboxPayload: %v", err)
+	}
 
 	var req tiktokpb.InboxRequest
 	if err := unmarshalProto(payload, &req); err != nil {

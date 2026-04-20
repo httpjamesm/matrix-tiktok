@@ -228,7 +228,7 @@ func buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64 string) []metaK
 //	       field 8  client message UUID
 //	       field 11 message_reply when aweType=703 (reply)
 //	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
-func buildSendPayload(convID string, convSourceID uint64, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string, isGroup bool, reply *OutgoingMessageReply, image *uploadedPrivateImage, video *uploadedPrivateVideo) []byte {
+func buildSendPayload(convID string, convSourceID uint64, text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string, isGroup bool, reply *OutgoingMessageReply, image *uploadedPrivateImage, video *uploadedPrivateVideo) ([]byte, error) {
 	messageKind := uint64(1)
 	if isGroup {
 		messageKind = 2
@@ -245,6 +245,7 @@ func buildSendPayload(convID string, convSourceID uint64, text, deviceID, msToke
 		},
 	}
 	var textJSON []byte
+	var err error
 	if reply != nil {
 		sendBody.Reserved_3 = protoUint64(reply.ParentSendChainID)
 		sendBody.MessageReply = &tiktokpb.SendMessageReplyAttachment{
@@ -342,9 +343,15 @@ func buildSendPayload(convID string, convSourceID uint64, text, deviceID, msToke
 			},
 		}
 	} else {
-		textJSON, _ = json.Marshal(map[string]any{"aweType": 0, "text": text})
+		textJSON, err = json.Marshal(map[string]any{"aweType": 0, "text": text})
+		if err != nil {
+			return nil, fmt.Errorf("marshal text payload: %w", err)
+		}
 		if reply != nil {
-			textJSON, _ = json.Marshal(map[string]any{"aweType": 703, "text": text})
+			textJSON, err = json.Marshal(map[string]any{"aweType": 703, "text": text})
+			if err != nil {
+				return nil, fmt.Errorf("marshal reply payload: %w", err)
+			}
 		}
 		sendBody.Reserved_6 = protoUint64(7)
 		sendBody.ContentJson = textJSON
@@ -374,9 +381,7 @@ func buildSendPayload(convID string, convSourceID uint64, text, deviceID, msToke
 		},
 	}
 
-	fmt.Println(msg)
-
-	return mustMarshalProto(msg)
+	return marshalProto(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -558,7 +563,7 @@ type DeleteMessageParams struct {
 //	           field 6  repeated reaction entry { 1:action  2:"e:<emoji>"  4:userID }
 //	       field 2  "deprecated"
 //	  └─ field 15  repeated metadata k/v pairs (including ticket-guard)
-func buildReactionPayload(p SendReactionParams, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string) []byte {
+func buildReactionPayload(p SendReactionParams, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID string) ([]byte, error) {
 	reserved6 := protoUint64(0)
 	if p.IsGroup {
 		reserved6 = protoUint64(1)
@@ -602,7 +607,7 @@ func buildReactionPayload(p SendReactionParams, deviceID, msToken, verifyFP, pub
 		},
 	}
 
-	return mustMarshalProto(msg)
+	return marshalProto(msg)
 }
 
 // buildDeletePayload constructs the protobuf request body for POST /v1/message/delete.
@@ -616,7 +621,7 @@ func buildReactionPayload(p SendReactionParams, deviceID, msToken, verifyFP, pub
 //	       field 3  1
 //	       field 4  server_message_id
 //	  └─ field 15  metadata (same style as inbox / get_by_conversation)
-func buildDeletePayload(convID string, sourceID, serverMsgID uint64, deviceID, msToken, verifyFP string) []byte {
+func buildDeletePayload(convID string, sourceID, serverMsgID uint64, deviceID, msToken, verifyFP string) ([]byte, error) {
 	msg := &tiktokpb.DeleteRequest{
 		MessageType:    protoUint64(701),
 		SubCommand:     protoUint64(10007),
@@ -639,7 +644,7 @@ func buildDeletePayload(convID string, sourceID, serverMsgID uint64, deviceID, m
 		},
 	}
 
-	return mustMarshalProto(msg)
+	return marshalProto(msg)
 }
 
 // buildRecallPayload constructs the protobuf request body for POST /v1/message/recall.
@@ -653,7 +658,7 @@ func buildDeletePayload(convID string, sourceID, serverMsgID uint64, deviceID, m
 //	       field 3  1
 //	       field 4  server_message_id
 //	  └─ field 15  metadata (same style as delete)
-func buildRecallPayload(convID string, sourceID, serverMsgID uint64, deviceID, msToken, verifyFP string) []byte {
+func buildRecallPayload(convID string, sourceID, serverMsgID uint64, deviceID, msToken, verifyFP string) ([]byte, error) {
 	msg := &tiktokpb.RecallRequest{
 		MessageType:    protoUint64(702),
 		SubCommand:     protoUint64(10025),
@@ -676,7 +681,7 @@ func buildRecallPayload(convID string, sourceID, serverMsgID uint64, deviceID, m
 		},
 	}
 
-	return mustMarshalProto(msg)
+	return marshalProto(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -723,7 +728,10 @@ func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
 
 	clientMsgID := uuid.New().String()
 
-	payload := buildReactionPayload(p, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID)
+	payload, err := buildReactionPayload(p, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID)
+	if err != nil {
+		return fmt.Errorf("build reaction payload: %w", err)
+	}
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).
@@ -832,7 +840,10 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 		}
 	}
 
-	payload := buildSendPayload(p.ConvID, p.ConvSourceID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID, p.IsGroup, p.Reply, uploadedImage, uploadedVideo)
+	payload, err := buildSendPayload(p.ConvID, p.ConvSourceID, p.Text, deviceID, msToken, verifyFP, publicKeyB64, clientMsgID, p.IsGroup, p.Reply, uploadedImage, uploadedVideo)
+	if err != nil {
+		return nil, fmt.Errorf("build send payload: %w", err)
+	}
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).
@@ -896,7 +907,10 @@ func (c *Client) RecallMessage(ctx context.Context, p DeleteMessageParams) error
 	msToken := extractCookie(cookie, "msToken")
 	verifyFP := extractCookie(cookie, "s_v_web_id")
 
-	payload := buildRecallPayload(p.ConvID, p.ConvoSourceID, p.ServerMessageID, deviceID, msToken, verifyFP)
+	payload, err := buildRecallPayload(p.ConvID, p.ConvoSourceID, p.ServerMessageID, deviceID, msToken, verifyFP)
+	if err != nil {
+		return fmt.Errorf("build recall payload: %w", err)
+	}
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).
@@ -941,7 +955,10 @@ func (c *Client) DeleteMessage(ctx context.Context, p DeleteMessageParams) error
 	msToken := extractCookie(cookie, "msToken")
 	verifyFP := extractCookie(cookie, "s_v_web_id")
 
-	payload := buildDeletePayload(p.ConvID, p.ConvoSourceID, p.ServerMessageID, deviceID, msToken, verifyFP)
+	payload, err := buildDeletePayload(p.ConvID, p.ConvoSourceID, p.ServerMessageID, deviceID, msToken, verifyFP)
+	if err != nil {
+		return fmt.Errorf("build delete payload: %w", err)
+	}
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).

@@ -29,12 +29,8 @@ func emptyProtoMessage() *tiktokpb.EmptyMessage {
 	return &tiktokpb.EmptyMessage{}
 }
 
-func mustMarshalProto(msg proto.Message) []byte {
-	b, err := proto.Marshal(msg)
-	if err != nil {
-		panic(fmt.Sprintf("marshal protobuf: %v", err))
-	}
-	return b
+func marshalProto(msg proto.Message) ([]byte, error) {
+	return proto.Marshal(msg)
 }
 
 func unmarshalProto(data []byte, msg proto.Message) error {
