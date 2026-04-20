@@ -5936,6 +5936,7 @@ func (x *WebsocketFrame) GetEnvelope() *WebsocketEnvelope {
 //
 // field 1 identifies the inner event type. The bridge currently handles:
 // - 500: chat message
+// - 501: read receipt (commands.read_receipt)
 // - 705: property mutation (reactions)
 type WebsocketEnvelope struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -5991,8 +5992,10 @@ func (x *WebsocketEnvelope) GetCommands() *WebsocketCommands {
 
 // WebSocket command container.
 type WebsocketCommands struct {
-	state          protoimpl.MessageState   `protogen:"open.v1"`
-	Chat           *WebsocketChat           `protobuf:"bytes,500,opt,name=chat" json:"chat,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Chat  *WebsocketChat         `protobuf:"bytes,500,opt,name=chat" json:"chat,omitempty"`
+	// inner_type 501: which message was read, in which conversation.
+	ReadReceipt    *WebsocketReadReceipt    `protobuf:"bytes,501,opt,name=read_receipt,json=readReceipt" json:"read_receipt,omitempty"`
 	PropertyUpdate *WebsocketPropertyUpdate `protobuf:"bytes,705,opt,name=property_update,json=propertyUpdate" json:"property_update,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -6035,11 +6038,100 @@ func (x *WebsocketCommands) GetChat() *WebsocketChat {
 	return nil
 }
 
+func (x *WebsocketCommands) GetReadReceipt() *WebsocketReadReceipt {
+	if x != nil {
+		return x.ReadReceipt
+	}
+	return nil
+}
+
 func (x *WebsocketCommands) GetPropertyUpdate() *WebsocketPropertyUpdate {
 	if x != nil {
 		return x.PropertyUpdate
 	}
 	return nil
+}
+
+// Read receipt carried by inner_type 501 (field commands.read_receipt).
+// Field meanings are partially inferred from captures; unknown fields may exist.
+type WebsocketReadReceipt struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ConversationId *string                `protobuf:"bytes,1,opt,name=conversation_id,json=conversationId" json:"conversation_id,omitempty"`
+	Reserved_2     *uint32                `protobuf:"varint,2,opt,name=reserved_2,json=reserved2" json:"reserved_2,omitempty"`
+	// Observed scale consistent with Unix microseconds (read cursor time).
+	ReadTimestampUs *uint64 `protobuf:"varint,3,opt,name=read_timestamp_us,json=readTimestampUs" json:"read_timestamp_us,omitempty"`
+	// In 1:1 captures this matched the trailing numeric segment of conversation_id;
+	// treated as candidate reader / peer id until group chats are verified.
+	PeerOrInboxId *uint64 `protobuf:"varint,5,opt,name=peer_or_inbox_id,json=peerOrInboxId" json:"peer_or_inbox_id,omitempty"`
+	// Server message id that was read (read-up-to / target).
+	ReadServerMessageId *uint64 `protobuf:"varint,6,opt,name=read_server_message_id,json=readServerMessageId" json:"read_server_message_id,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *WebsocketReadReceipt) Reset() {
+	*x = WebsocketReadReceipt{}
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[80]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WebsocketReadReceipt) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WebsocketReadReceipt) ProtoMessage() {}
+
+func (x *WebsocketReadReceipt) ProtoReflect() protoreflect.Message {
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[80]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WebsocketReadReceipt.ProtoReflect.Descriptor instead.
+func (*WebsocketReadReceipt) Descriptor() ([]byte, []int) {
+	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{80}
+}
+
+func (x *WebsocketReadReceipt) GetConversationId() string {
+	if x != nil && x.ConversationId != nil {
+		return *x.ConversationId
+	}
+	return ""
+}
+
+func (x *WebsocketReadReceipt) GetReserved_2() uint32 {
+	if x != nil && x.Reserved_2 != nil {
+		return *x.Reserved_2
+	}
+	return 0
+}
+
+func (x *WebsocketReadReceipt) GetReadTimestampUs() uint64 {
+	if x != nil && x.ReadTimestampUs != nil {
+		return *x.ReadTimestampUs
+	}
+	return 0
+}
+
+func (x *WebsocketReadReceipt) GetPeerOrInboxId() uint64 {
+	if x != nil && x.PeerOrInboxId != nil {
+		return *x.PeerOrInboxId
+	}
+	return 0
+}
+
+func (x *WebsocketReadReceipt) GetReadServerMessageId() uint64 {
+	if x != nil && x.ReadServerMessageId != nil {
+		return *x.ReadServerMessageId
+	}
+	return 0
 }
 
 // WebSocket chat event container.
@@ -6053,7 +6145,7 @@ type WebsocketChat struct {
 
 func (x *WebsocketChat) Reset() {
 	*x = WebsocketChat{}
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[80]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6065,7 +6157,7 @@ func (x *WebsocketChat) String() string {
 func (*WebsocketChat) ProtoMessage() {}
 
 func (x *WebsocketChat) ProtoReflect() protoreflect.Message {
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[80]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6078,7 +6170,7 @@ func (x *WebsocketChat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketChat.ProtoReflect.Descriptor instead.
 func (*WebsocketChat) Descriptor() ([]byte, []int) {
-	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{80}
+	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *WebsocketChat) GetConversationId() string {
@@ -6130,7 +6222,7 @@ type WebsocketMessageDetail struct {
 
 func (x *WebsocketMessageDetail) Reset() {
 	*x = WebsocketMessageDetail{}
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[81]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6142,7 +6234,7 @@ func (x *WebsocketMessageDetail) String() string {
 func (*WebsocketMessageDetail) ProtoMessage() {}
 
 func (x *WebsocketMessageDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[81]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6155,7 +6247,7 @@ func (x *WebsocketMessageDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketMessageDetail.ProtoReflect.Descriptor instead.
 func (*WebsocketMessageDetail) Descriptor() ([]byte, []int) {
-	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{81}
+	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *WebsocketMessageDetail) GetServerMessageId() uint64 {
@@ -6261,7 +6353,7 @@ type WebsocketPropertyUpdate struct {
 
 func (x *WebsocketPropertyUpdate) Reset() {
 	*x = WebsocketPropertyUpdate{}
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[82]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6273,7 +6365,7 @@ func (x *WebsocketPropertyUpdate) String() string {
 func (*WebsocketPropertyUpdate) ProtoMessage() {}
 
 func (x *WebsocketPropertyUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[82]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6286,7 +6378,7 @@ func (x *WebsocketPropertyUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketPropertyUpdate.ProtoReflect.Descriptor instead.
 func (*WebsocketPropertyUpdate) Descriptor() ([]byte, []int) {
-	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{82}
+	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *WebsocketPropertyUpdate) GetConversationId() string {
@@ -6888,10 +6980,18 @@ const file_tiktok_im_v1_im_proto_rawDesc = "" +
 	"\x11WebsocketEnvelope\x12\x1d\n" +
 	"\n" +
 	"inner_type\x18\x01 \x01(\x04R\tinnerType\x12;\n" +
-	"\bcommands\x18\x06 \x01(\v2\x1f.tiktok.im.v1.WebsocketCommandsR\bcommands\"\x96\x01\n" +
+	"\bcommands\x18\x06 \x01(\v2\x1f.tiktok.im.v1.WebsocketCommandsR\bcommands\"\xde\x01\n" +
 	"\x11WebsocketCommands\x120\n" +
-	"\x04chat\x18\xf4\x03 \x01(\v2\x1b.tiktok.im.v1.WebsocketChatR\x04chat\x12O\n" +
-	"\x0fproperty_update\x18\xc1\x05 \x01(\v2%.tiktok.im.v1.WebsocketPropertyUpdateR\x0epropertyUpdate\"v\n" +
+	"\x04chat\x18\xf4\x03 \x01(\v2\x1b.tiktok.im.v1.WebsocketChatR\x04chat\x12F\n" +
+	"\fread_receipt\x18\xf5\x03 \x01(\v2\".tiktok.im.v1.WebsocketReadReceiptR\vreadReceipt\x12O\n" +
+	"\x0fproperty_update\x18\xc1\x05 \x01(\v2%.tiktok.im.v1.WebsocketPropertyUpdateR\x0epropertyUpdate\"\xe8\x01\n" +
+	"\x14WebsocketReadReceipt\x12'\n" +
+	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x1d\n" +
+	"\n" +
+	"reserved_2\x18\x02 \x01(\rR\treserved2\x12*\n" +
+	"\x11read_timestamp_us\x18\x03 \x01(\x04R\x0freadTimestampUs\x12'\n" +
+	"\x10peer_or_inbox_id\x18\x05 \x01(\x04R\rpeerOrInboxId\x123\n" +
+	"\x16read_server_message_id\x18\x06 \x01(\x04R\x13readServerMessageId\"v\n" +
 	"\rWebsocketChat\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12<\n" +
 	"\x06detail\x18\x05 \x01(\v2$.tiktok.im.v1.WebsocketMessageDetailR\x06detail\"\xd1\x04\n" +
@@ -6933,7 +7033,7 @@ func file_tiktok_im_v1_im_proto_rawDescGZIP() []byte {
 	return file_tiktok_im_v1_im_proto_rawDescData
 }
 
-var file_tiktok_im_v1_im_proto_msgTypes = make([]protoimpl.MessageInfo, 83)
+var file_tiktok_im_v1_im_proto_msgTypes = make([]protoimpl.MessageInfo, 84)
 var file_tiktok_im_v1_im_proto_goTypes = []any{
 	(*EmptyMessage)(nil),                       // 0: tiktok.im.v1.EmptyMessage
 	(*MetadataKV)(nil),                         // 1: tiktok.im.v1.MetadataKV
@@ -7015,115 +7115,117 @@ var file_tiktok_im_v1_im_proto_goTypes = []any{
 	(*WebsocketFrame)(nil),                     // 77: tiktok.im.v1.WebsocketFrame
 	(*WebsocketEnvelope)(nil),                  // 78: tiktok.im.v1.WebsocketEnvelope
 	(*WebsocketCommands)(nil),                  // 79: tiktok.im.v1.WebsocketCommands
-	(*WebsocketChat)(nil),                      // 80: tiktok.im.v1.WebsocketChat
-	(*WebsocketMessageDetail)(nil),             // 81: tiktok.im.v1.WebsocketMessageDetail
-	(*WebsocketPropertyUpdate)(nil),            // 82: tiktok.im.v1.WebsocketPropertyUpdate
+	(*WebsocketReadReceipt)(nil),               // 80: tiktok.im.v1.WebsocketReadReceipt
+	(*WebsocketChat)(nil),                      // 81: tiktok.im.v1.WebsocketChat
+	(*WebsocketMessageDetail)(nil),             // 82: tiktok.im.v1.WebsocketMessageDetail
+	(*WebsocketPropertyUpdate)(nil),            // 83: tiktok.im.v1.WebsocketPropertyUpdate
 }
 var file_tiktok_im_v1_im_proto_depIdxs = []int32{
-	0,  // 0: tiktok.im.v1.MediaUploadConfigRequest.options:type_name -> tiktok.im.v1.EmptyMessage
-	3,  // 1: tiktok.im.v1.MediaUploadConfigRequest.payload:type_name -> tiktok.im.v1.MediaUploadConfigRequestPayload
-	1,  // 2: tiktok.im.v1.MediaUploadConfigRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
-	5,  // 3: tiktok.im.v1.MediaUploadConfigResponse.payload:type_name -> tiktok.im.v1.MediaUploadConfigPayload
-	6,  // 4: tiktok.im.v1.MediaUploadConfigPayload.imagex:type_name -> tiktok.im.v1.MediaUploadConfigList
-	7,  // 5: tiktok.im.v1.MediaUploadConfigList.entries:type_name -> tiktok.im.v1.MediaUploadConfigEntry
-	0,  // 6: tiktok.im.v1.InboxRequest.options:type_name -> tiktok.im.v1.EmptyMessage
-	10, // 7: tiktok.im.v1.InboxRequest.payload:type_name -> tiktok.im.v1.InboxRequestPayload
-	1,  // 8: tiktok.im.v1.InboxRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
-	11, // 9: tiktok.im.v1.InboxRequestPayload.user_init_list:type_name -> tiktok.im.v1.GetUserConversationListRequestBody
-	13, // 10: tiktok.im.v1.InboxResponse.payload:type_name -> tiktok.im.v1.InboxResponsePayload
-	14, // 11: tiktok.im.v1.InboxResponsePayload.user_init_list:type_name -> tiktok.im.v1.InboxConversationList
-	15, // 12: tiktok.im.v1.InboxConversationList.entries:type_name -> tiktok.im.v1.InboxConversationEntry
-	16, // 13: tiktok.im.v1.InboxConversationList.conversations:type_name -> tiktok.im.v1.InboxConversationDetail
-	8,  // 14: tiktok.im.v1.InboxConversationEntry.tags:type_name -> tiktok.im.v1.MetadataTag
-	17, // 15: tiktok.im.v1.InboxConversationDetail.members:type_name -> tiktok.im.v1.InboxConversationMembers
-	19, // 16: tiktok.im.v1.InboxConversationDetail.core:type_name -> tiktok.im.v1.InboxConversationCore
-	20, // 17: tiktok.im.v1.InboxConversationDetail.state:type_name -> tiktok.im.v1.InboxConversationState
-	18, // 18: tiktok.im.v1.InboxConversationMembers.entries:type_name -> tiktok.im.v1.InboxConversationMember
-	1,  // 19: tiktok.im.v1.InboxConversationCore.attributes:type_name -> tiktok.im.v1.MetadataKV
-	1,  // 20: tiktok.im.v1.InboxConversationState.attributes:type_name -> tiktok.im.v1.MetadataKV
-	0,  // 21: tiktok.im.v1.GetByConversationRequest.options:type_name -> tiktok.im.v1.EmptyMessage
-	22, // 22: tiktok.im.v1.GetByConversationRequest.payload:type_name -> tiktok.im.v1.GetByConversationRequestPayload
-	1,  // 23: tiktok.im.v1.GetByConversationRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
-	23, // 24: tiktok.im.v1.GetByConversationRequestPayload.query:type_name -> tiktok.im.v1.GetByConversationQuery
-	25, // 25: tiktok.im.v1.GetByConversationResponse.payload:type_name -> tiktok.im.v1.GetByConversationResponsePayload
-	26, // 26: tiktok.im.v1.GetByConversationResponsePayload.conversation:type_name -> tiktok.im.v1.ConversationMessageList
-	36, // 27: tiktok.im.v1.ConversationMessageList.entries:type_name -> tiktok.im.v1.ConversationMessageEntry
-	29, // 28: tiktok.im.v1.StickerAsset.size:type_name -> tiktok.im.v1.StickerAssetSize
-	28, // 29: tiktok.im.v1.StickerDisplayTexts.reserved_1:type_name -> tiktok.im.v1.LocalizedText
-	28, // 30: tiktok.im.v1.StickerDisplayTexts.sent_a_sticker:type_name -> tiktok.im.v1.LocalizedText
-	28, // 31: tiktok.im.v1.StickerDisplayTexts.bracketed_sticker:type_name -> tiktok.im.v1.LocalizedText
-	30, // 32: tiktok.im.v1.StickerMessagePayload.asset:type_name -> tiktok.im.v1.StickerAsset
-	31, // 33: tiktok.im.v1.StickerMessagePayload.display_texts:type_name -> tiktok.im.v1.StickerDisplayTexts
-	32, // 34: tiktok.im.v1.MessageAttachmentPayload.sticker:type_name -> tiktok.im.v1.StickerMessagePayload
-	34, // 35: tiktok.im.v1.PrivateImageAttachment.variants:type_name -> tiktok.im.v1.PrivateImageVariant
-	8,  // 36: tiktok.im.v1.ConversationMessageEntry.tags:type_name -> tiktok.im.v1.MetadataTag
-	71, // 37: tiktok.im.v1.ConversationMessageEntry.reactions:type_name -> tiktok.im.v1.ReactionSummary
-	27, // 38: tiktok.im.v1.ConversationMessageEntry.message_reply:type_name -> tiktok.im.v1.MessageReplyReference
-	33, // 39: tiktok.im.v1.ConversationMessageEntry.attachment:type_name -> tiktok.im.v1.MessageAttachmentPayload
-	35, // 40: tiktok.im.v1.ConversationMessageEntry.private_image:type_name -> tiktok.im.v1.PrivateImageAttachment
-	0,  // 41: tiktok.im.v1.SendRequest.options:type_name -> tiktok.im.v1.EmptyMessage
-	38, // 42: tiktok.im.v1.SendRequest.payload:type_name -> tiktok.im.v1.SendRequestPayload
-	1,  // 43: tiktok.im.v1.SendRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
-	55, // 44: tiktok.im.v1.SendRequestPayload.send:type_name -> tiktok.im.v1.SendMessageBody
-	40, // 45: tiktok.im.v1.SendPrivateImageAsset.size:type_name -> tiktok.im.v1.SendMediaSize
-	28, // 46: tiktok.im.v1.SendPrivateImageDisplayTexts.sender_preview:type_name -> tiktok.im.v1.LocalizedText
-	28, // 47: tiktok.im.v1.SendPrivateImageDisplayTexts.recipient_preview:type_name -> tiktok.im.v1.LocalizedText
-	28, // 48: tiktok.im.v1.SendPrivateImageDisplayTexts.bracketed_preview:type_name -> tiktok.im.v1.LocalizedText
-	1,  // 49: tiktok.im.v1.SendPrivateImageMetadataEntry.properties:type_name -> tiktok.im.v1.MetadataKV
-	43, // 50: tiktok.im.v1.SendPrivateImageMetadataList.entries:type_name -> tiktok.im.v1.SendPrivateImageMetadataEntry
-	41, // 51: tiktok.im.v1.SendPrivateImageAttachmentPayload.assets:type_name -> tiktok.im.v1.SendPrivateImageAsset
-	42, // 52: tiktok.im.v1.SendPrivateImageAttachmentPayload.display_texts:type_name -> tiktok.im.v1.SendPrivateImageDisplayTexts
-	44, // 53: tiktok.im.v1.SendPrivateImageAttachmentPayload.metadata:type_name -> tiktok.im.v1.SendPrivateImageMetadataList
-	46, // 54: tiktok.im.v1.SendPrivateVideoPrimaryAsset.poster:type_name -> tiktok.im.v1.SendPrivateVideoPoster
-	40, // 55: tiktok.im.v1.SendPrivateVideoPrimaryAsset.display_size:type_name -> tiktok.im.v1.SendMediaSize
-	48, // 56: tiktok.im.v1.SendPrivateVideoMetadataEntry.inner:type_name -> tiktok.im.v1.SendPrivateVideoMetadataInner
-	49, // 57: tiktok.im.v1.SendPrivateVideoMetadataList.entries:type_name -> tiktok.im.v1.SendPrivateVideoMetadataEntry
-	47, // 58: tiktok.im.v1.SendPrivateVideoAttachmentPayload.primary:type_name -> tiktok.im.v1.SendPrivateVideoPrimaryAsset
-	50, // 59: tiktok.im.v1.SendPrivateVideoAttachmentPayload.metadata:type_name -> tiktok.im.v1.SendPrivateVideoMetadataList
-	45, // 60: tiktok.im.v1.SendAttachmentPayload.private_image:type_name -> tiktok.im.v1.SendPrivateImageAttachmentPayload
-	51, // 61: tiktok.im.v1.SendAttachmentPayload.private_video:type_name -> tiktok.im.v1.SendPrivateVideoAttachmentPayload
-	53, // 62: tiktok.im.v1.SendPrivateImageAttachmentSummary.file_info:type_name -> tiktok.im.v1.SendPrivateImageFileInfo
-	8,  // 63: tiktok.im.v1.SendMessageBody.tags:type_name -> tiktok.im.v1.MetadataTag
-	39, // 64: tiktok.im.v1.SendMessageBody.message_reply:type_name -> tiktok.im.v1.SendMessageReplyAttachment
-	52, // 65: tiktok.im.v1.SendMessageBody.attachment:type_name -> tiktok.im.v1.SendAttachmentPayload
-	54, // 66: tiktok.im.v1.SendMessageBody.private_image:type_name -> tiktok.im.v1.SendPrivateImageAttachmentSummary
-	57, // 67: tiktok.im.v1.SendResponse.primary:type_name -> tiktok.im.v1.SendResponsePayload
-	57, // 68: tiktok.im.v1.SendResponse.fallback:type_name -> tiktok.im.v1.SendResponsePayload
-	58, // 69: tiktok.im.v1.SendResponsePayload.send:type_name -> tiktok.im.v1.SendResponseBody
-	0,  // 70: tiktok.im.v1.DeleteRequest.options:type_name -> tiktok.im.v1.EmptyMessage
-	60, // 71: tiktok.im.v1.DeleteRequest.payload:type_name -> tiktok.im.v1.DeleteRequestPayload
-	1,  // 72: tiktok.im.v1.DeleteRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
-	61, // 73: tiktok.im.v1.DeleteRequestPayload.delete:type_name -> tiktok.im.v1.DeleteMessageBody
-	0,  // 74: tiktok.im.v1.RecallRequest.options:type_name -> tiktok.im.v1.EmptyMessage
-	64, // 75: tiktok.im.v1.RecallRequest.payload:type_name -> tiktok.im.v1.RecallRequestPayload
-	1,  // 76: tiktok.im.v1.RecallRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
-	61, // 77: tiktok.im.v1.RecallRequestPayload.recall:type_name -> tiktok.im.v1.DeleteMessageBody
-	0,  // 78: tiktok.im.v1.ReactionRequest.options:type_name -> tiktok.im.v1.EmptyMessage
-	67, // 79: tiktok.im.v1.ReactionRequest.payload:type_name -> tiktok.im.v1.ReactionRequestPayload
-	1,  // 80: tiktok.im.v1.ReactionRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
-	68, // 81: tiktok.im.v1.ReactionRequestPayload.wrapper:type_name -> tiktok.im.v1.ReactionWrapper
-	69, // 82: tiktok.im.v1.ReactionWrapper.body:type_name -> tiktok.im.v1.ReactionBody
-	70, // 83: tiktok.im.v1.ReactionBody.reactions:type_name -> tiktok.im.v1.ReactionMutation
-	72, // 84: tiktok.im.v1.ReactionSummary.users:type_name -> tiktok.im.v1.ReactionUsers
-	73, // 85: tiktok.im.v1.ReactionUsers.entries:type_name -> tiktok.im.v1.ReactionUser
-	75, // 86: tiktok.im.v1.WebsocketOuterFrame.headers:type_name -> tiktok.im.v1.WebsocketHeader
-	76, // 87: tiktok.im.v1.WebsocketOuterFrame.meta:type_name -> tiktok.im.v1.WebsocketMeta
-	76, // 88: tiktok.im.v1.WebsocketOuterFrame.reserved_14:type_name -> tiktok.im.v1.WebsocketMeta
-	78, // 89: tiktok.im.v1.WebsocketFrame.envelope:type_name -> tiktok.im.v1.WebsocketEnvelope
-	79, // 90: tiktok.im.v1.WebsocketEnvelope.commands:type_name -> tiktok.im.v1.WebsocketCommands
-	80, // 91: tiktok.im.v1.WebsocketCommands.chat:type_name -> tiktok.im.v1.WebsocketChat
-	82, // 92: tiktok.im.v1.WebsocketCommands.property_update:type_name -> tiktok.im.v1.WebsocketPropertyUpdate
-	81, // 93: tiktok.im.v1.WebsocketChat.detail:type_name -> tiktok.im.v1.WebsocketMessageDetail
-	8,  // 94: tiktok.im.v1.WebsocketMessageDetail.tags:type_name -> tiktok.im.v1.MetadataTag
-	27, // 95: tiktok.im.v1.WebsocketMessageDetail.message_reply:type_name -> tiktok.im.v1.MessageReplyReference
-	33, // 96: tiktok.im.v1.WebsocketMessageDetail.attachment:type_name -> tiktok.im.v1.MessageAttachmentPayload
-	35, // 97: tiktok.im.v1.WebsocketMessageDetail.private_image:type_name -> tiktok.im.v1.PrivateImageAttachment
-	8,  // 98: tiktok.im.v1.WebsocketPropertyUpdate.tags:type_name -> tiktok.im.v1.MetadataTag
-	99, // [99:99] is the sub-list for method output_type
-	99, // [99:99] is the sub-list for method input_type
-	99, // [99:99] is the sub-list for extension type_name
-	99, // [99:99] is the sub-list for extension extendee
-	0,  // [0:99] is the sub-list for field type_name
+	0,   // 0: tiktok.im.v1.MediaUploadConfigRequest.options:type_name -> tiktok.im.v1.EmptyMessage
+	3,   // 1: tiktok.im.v1.MediaUploadConfigRequest.payload:type_name -> tiktok.im.v1.MediaUploadConfigRequestPayload
+	1,   // 2: tiktok.im.v1.MediaUploadConfigRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
+	5,   // 3: tiktok.im.v1.MediaUploadConfigResponse.payload:type_name -> tiktok.im.v1.MediaUploadConfigPayload
+	6,   // 4: tiktok.im.v1.MediaUploadConfigPayload.imagex:type_name -> tiktok.im.v1.MediaUploadConfigList
+	7,   // 5: tiktok.im.v1.MediaUploadConfigList.entries:type_name -> tiktok.im.v1.MediaUploadConfigEntry
+	0,   // 6: tiktok.im.v1.InboxRequest.options:type_name -> tiktok.im.v1.EmptyMessage
+	10,  // 7: tiktok.im.v1.InboxRequest.payload:type_name -> tiktok.im.v1.InboxRequestPayload
+	1,   // 8: tiktok.im.v1.InboxRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
+	11,  // 9: tiktok.im.v1.InboxRequestPayload.user_init_list:type_name -> tiktok.im.v1.GetUserConversationListRequestBody
+	13,  // 10: tiktok.im.v1.InboxResponse.payload:type_name -> tiktok.im.v1.InboxResponsePayload
+	14,  // 11: tiktok.im.v1.InboxResponsePayload.user_init_list:type_name -> tiktok.im.v1.InboxConversationList
+	15,  // 12: tiktok.im.v1.InboxConversationList.entries:type_name -> tiktok.im.v1.InboxConversationEntry
+	16,  // 13: tiktok.im.v1.InboxConversationList.conversations:type_name -> tiktok.im.v1.InboxConversationDetail
+	8,   // 14: tiktok.im.v1.InboxConversationEntry.tags:type_name -> tiktok.im.v1.MetadataTag
+	17,  // 15: tiktok.im.v1.InboxConversationDetail.members:type_name -> tiktok.im.v1.InboxConversationMembers
+	19,  // 16: tiktok.im.v1.InboxConversationDetail.core:type_name -> tiktok.im.v1.InboxConversationCore
+	20,  // 17: tiktok.im.v1.InboxConversationDetail.state:type_name -> tiktok.im.v1.InboxConversationState
+	18,  // 18: tiktok.im.v1.InboxConversationMembers.entries:type_name -> tiktok.im.v1.InboxConversationMember
+	1,   // 19: tiktok.im.v1.InboxConversationCore.attributes:type_name -> tiktok.im.v1.MetadataKV
+	1,   // 20: tiktok.im.v1.InboxConversationState.attributes:type_name -> tiktok.im.v1.MetadataKV
+	0,   // 21: tiktok.im.v1.GetByConversationRequest.options:type_name -> tiktok.im.v1.EmptyMessage
+	22,  // 22: tiktok.im.v1.GetByConversationRequest.payload:type_name -> tiktok.im.v1.GetByConversationRequestPayload
+	1,   // 23: tiktok.im.v1.GetByConversationRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
+	23,  // 24: tiktok.im.v1.GetByConversationRequestPayload.query:type_name -> tiktok.im.v1.GetByConversationQuery
+	25,  // 25: tiktok.im.v1.GetByConversationResponse.payload:type_name -> tiktok.im.v1.GetByConversationResponsePayload
+	26,  // 26: tiktok.im.v1.GetByConversationResponsePayload.conversation:type_name -> tiktok.im.v1.ConversationMessageList
+	36,  // 27: tiktok.im.v1.ConversationMessageList.entries:type_name -> tiktok.im.v1.ConversationMessageEntry
+	29,  // 28: tiktok.im.v1.StickerAsset.size:type_name -> tiktok.im.v1.StickerAssetSize
+	28,  // 29: tiktok.im.v1.StickerDisplayTexts.reserved_1:type_name -> tiktok.im.v1.LocalizedText
+	28,  // 30: tiktok.im.v1.StickerDisplayTexts.sent_a_sticker:type_name -> tiktok.im.v1.LocalizedText
+	28,  // 31: tiktok.im.v1.StickerDisplayTexts.bracketed_sticker:type_name -> tiktok.im.v1.LocalizedText
+	30,  // 32: tiktok.im.v1.StickerMessagePayload.asset:type_name -> tiktok.im.v1.StickerAsset
+	31,  // 33: tiktok.im.v1.StickerMessagePayload.display_texts:type_name -> tiktok.im.v1.StickerDisplayTexts
+	32,  // 34: tiktok.im.v1.MessageAttachmentPayload.sticker:type_name -> tiktok.im.v1.StickerMessagePayload
+	34,  // 35: tiktok.im.v1.PrivateImageAttachment.variants:type_name -> tiktok.im.v1.PrivateImageVariant
+	8,   // 36: tiktok.im.v1.ConversationMessageEntry.tags:type_name -> tiktok.im.v1.MetadataTag
+	71,  // 37: tiktok.im.v1.ConversationMessageEntry.reactions:type_name -> tiktok.im.v1.ReactionSummary
+	27,  // 38: tiktok.im.v1.ConversationMessageEntry.message_reply:type_name -> tiktok.im.v1.MessageReplyReference
+	33,  // 39: tiktok.im.v1.ConversationMessageEntry.attachment:type_name -> tiktok.im.v1.MessageAttachmentPayload
+	35,  // 40: tiktok.im.v1.ConversationMessageEntry.private_image:type_name -> tiktok.im.v1.PrivateImageAttachment
+	0,   // 41: tiktok.im.v1.SendRequest.options:type_name -> tiktok.im.v1.EmptyMessage
+	38,  // 42: tiktok.im.v1.SendRequest.payload:type_name -> tiktok.im.v1.SendRequestPayload
+	1,   // 43: tiktok.im.v1.SendRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
+	55,  // 44: tiktok.im.v1.SendRequestPayload.send:type_name -> tiktok.im.v1.SendMessageBody
+	40,  // 45: tiktok.im.v1.SendPrivateImageAsset.size:type_name -> tiktok.im.v1.SendMediaSize
+	28,  // 46: tiktok.im.v1.SendPrivateImageDisplayTexts.sender_preview:type_name -> tiktok.im.v1.LocalizedText
+	28,  // 47: tiktok.im.v1.SendPrivateImageDisplayTexts.recipient_preview:type_name -> tiktok.im.v1.LocalizedText
+	28,  // 48: tiktok.im.v1.SendPrivateImageDisplayTexts.bracketed_preview:type_name -> tiktok.im.v1.LocalizedText
+	1,   // 49: tiktok.im.v1.SendPrivateImageMetadataEntry.properties:type_name -> tiktok.im.v1.MetadataKV
+	43,  // 50: tiktok.im.v1.SendPrivateImageMetadataList.entries:type_name -> tiktok.im.v1.SendPrivateImageMetadataEntry
+	41,  // 51: tiktok.im.v1.SendPrivateImageAttachmentPayload.assets:type_name -> tiktok.im.v1.SendPrivateImageAsset
+	42,  // 52: tiktok.im.v1.SendPrivateImageAttachmentPayload.display_texts:type_name -> tiktok.im.v1.SendPrivateImageDisplayTexts
+	44,  // 53: tiktok.im.v1.SendPrivateImageAttachmentPayload.metadata:type_name -> tiktok.im.v1.SendPrivateImageMetadataList
+	46,  // 54: tiktok.im.v1.SendPrivateVideoPrimaryAsset.poster:type_name -> tiktok.im.v1.SendPrivateVideoPoster
+	40,  // 55: tiktok.im.v1.SendPrivateVideoPrimaryAsset.display_size:type_name -> tiktok.im.v1.SendMediaSize
+	48,  // 56: tiktok.im.v1.SendPrivateVideoMetadataEntry.inner:type_name -> tiktok.im.v1.SendPrivateVideoMetadataInner
+	49,  // 57: tiktok.im.v1.SendPrivateVideoMetadataList.entries:type_name -> tiktok.im.v1.SendPrivateVideoMetadataEntry
+	47,  // 58: tiktok.im.v1.SendPrivateVideoAttachmentPayload.primary:type_name -> tiktok.im.v1.SendPrivateVideoPrimaryAsset
+	50,  // 59: tiktok.im.v1.SendPrivateVideoAttachmentPayload.metadata:type_name -> tiktok.im.v1.SendPrivateVideoMetadataList
+	45,  // 60: tiktok.im.v1.SendAttachmentPayload.private_image:type_name -> tiktok.im.v1.SendPrivateImageAttachmentPayload
+	51,  // 61: tiktok.im.v1.SendAttachmentPayload.private_video:type_name -> tiktok.im.v1.SendPrivateVideoAttachmentPayload
+	53,  // 62: tiktok.im.v1.SendPrivateImageAttachmentSummary.file_info:type_name -> tiktok.im.v1.SendPrivateImageFileInfo
+	8,   // 63: tiktok.im.v1.SendMessageBody.tags:type_name -> tiktok.im.v1.MetadataTag
+	39,  // 64: tiktok.im.v1.SendMessageBody.message_reply:type_name -> tiktok.im.v1.SendMessageReplyAttachment
+	52,  // 65: tiktok.im.v1.SendMessageBody.attachment:type_name -> tiktok.im.v1.SendAttachmentPayload
+	54,  // 66: tiktok.im.v1.SendMessageBody.private_image:type_name -> tiktok.im.v1.SendPrivateImageAttachmentSummary
+	57,  // 67: tiktok.im.v1.SendResponse.primary:type_name -> tiktok.im.v1.SendResponsePayload
+	57,  // 68: tiktok.im.v1.SendResponse.fallback:type_name -> tiktok.im.v1.SendResponsePayload
+	58,  // 69: tiktok.im.v1.SendResponsePayload.send:type_name -> tiktok.im.v1.SendResponseBody
+	0,   // 70: tiktok.im.v1.DeleteRequest.options:type_name -> tiktok.im.v1.EmptyMessage
+	60,  // 71: tiktok.im.v1.DeleteRequest.payload:type_name -> tiktok.im.v1.DeleteRequestPayload
+	1,   // 72: tiktok.im.v1.DeleteRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
+	61,  // 73: tiktok.im.v1.DeleteRequestPayload.delete:type_name -> tiktok.im.v1.DeleteMessageBody
+	0,   // 74: tiktok.im.v1.RecallRequest.options:type_name -> tiktok.im.v1.EmptyMessage
+	64,  // 75: tiktok.im.v1.RecallRequest.payload:type_name -> tiktok.im.v1.RecallRequestPayload
+	1,   // 76: tiktok.im.v1.RecallRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
+	61,  // 77: tiktok.im.v1.RecallRequestPayload.recall:type_name -> tiktok.im.v1.DeleteMessageBody
+	0,   // 78: tiktok.im.v1.ReactionRequest.options:type_name -> tiktok.im.v1.EmptyMessage
+	67,  // 79: tiktok.im.v1.ReactionRequest.payload:type_name -> tiktok.im.v1.ReactionRequestPayload
+	1,   // 80: tiktok.im.v1.ReactionRequest.metadata:type_name -> tiktok.im.v1.MetadataKV
+	68,  // 81: tiktok.im.v1.ReactionRequestPayload.wrapper:type_name -> tiktok.im.v1.ReactionWrapper
+	69,  // 82: tiktok.im.v1.ReactionWrapper.body:type_name -> tiktok.im.v1.ReactionBody
+	70,  // 83: tiktok.im.v1.ReactionBody.reactions:type_name -> tiktok.im.v1.ReactionMutation
+	72,  // 84: tiktok.im.v1.ReactionSummary.users:type_name -> tiktok.im.v1.ReactionUsers
+	73,  // 85: tiktok.im.v1.ReactionUsers.entries:type_name -> tiktok.im.v1.ReactionUser
+	75,  // 86: tiktok.im.v1.WebsocketOuterFrame.headers:type_name -> tiktok.im.v1.WebsocketHeader
+	76,  // 87: tiktok.im.v1.WebsocketOuterFrame.meta:type_name -> tiktok.im.v1.WebsocketMeta
+	76,  // 88: tiktok.im.v1.WebsocketOuterFrame.reserved_14:type_name -> tiktok.im.v1.WebsocketMeta
+	78,  // 89: tiktok.im.v1.WebsocketFrame.envelope:type_name -> tiktok.im.v1.WebsocketEnvelope
+	79,  // 90: tiktok.im.v1.WebsocketEnvelope.commands:type_name -> tiktok.im.v1.WebsocketCommands
+	81,  // 91: tiktok.im.v1.WebsocketCommands.chat:type_name -> tiktok.im.v1.WebsocketChat
+	80,  // 92: tiktok.im.v1.WebsocketCommands.read_receipt:type_name -> tiktok.im.v1.WebsocketReadReceipt
+	83,  // 93: tiktok.im.v1.WebsocketCommands.property_update:type_name -> tiktok.im.v1.WebsocketPropertyUpdate
+	82,  // 94: tiktok.im.v1.WebsocketChat.detail:type_name -> tiktok.im.v1.WebsocketMessageDetail
+	8,   // 95: tiktok.im.v1.WebsocketMessageDetail.tags:type_name -> tiktok.im.v1.MetadataTag
+	27,  // 96: tiktok.im.v1.WebsocketMessageDetail.message_reply:type_name -> tiktok.im.v1.MessageReplyReference
+	33,  // 97: tiktok.im.v1.WebsocketMessageDetail.attachment:type_name -> tiktok.im.v1.MessageAttachmentPayload
+	35,  // 98: tiktok.im.v1.WebsocketMessageDetail.private_image:type_name -> tiktok.im.v1.PrivateImageAttachment
+	8,   // 99: tiktok.im.v1.WebsocketPropertyUpdate.tags:type_name -> tiktok.im.v1.MetadataTag
+	100, // [100:100] is the sub-list for method output_type
+	100, // [100:100] is the sub-list for method input_type
+	100, // [100:100] is the sub-list for extension type_name
+	100, // [100:100] is the sub-list for extension extendee
+	0,   // [0:100] is the sub-list for field type_name
 }
 
 func init() { file_tiktok_im_v1_im_proto_init() }
@@ -7137,7 +7239,7 @@ func file_tiktok_im_v1_im_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tiktok_im_v1_im_proto_rawDesc), len(file_tiktok_im_v1_im_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   83,
+			NumMessages:   84,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

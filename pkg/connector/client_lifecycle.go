@@ -142,8 +142,16 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 					Bool("only_for_me", d.OnlyForMe).
 					Msg("WS event: message deleted on TikTok")
 				tc.dispatchWSMessageDeletion(d)
+			case evt.ReadReceipt != nil:
+				rr := evt.ReadReceipt
+				log.Debug().
+					Str("conversation_id", rr.ConversationID).
+					Uint64("server_message_id", rr.ReadServerMessageID).
+					Str("reader_user_id", rr.ReaderUserID).
+					Msg("WS event: read receipt")
+				tc.dispatchWSReadReceipt(rr)
 			default:
-				log.Warn().Msg("WS event: received event with nil Message, Reaction, and Deletion")
+				log.Warn().Msg("WS event: received event with nil Message, Reaction, Deletion, and ReadReceipt")
 			}
 		}
 

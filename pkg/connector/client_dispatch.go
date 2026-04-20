@@ -226,3 +226,51 @@ func (tc *TikTokClient) dispatchWSMessageDeletion(d *libtiktok.WSMessageDeletion
 		Bool("only_for_me", d.OnlyForMe).
 		Msg("Queued remote message deletion event")
 }
+
+// dispatchWSReadReceipt bridges a TikTok read receipt to Matrix when the wire
+// includes a non-zero peer_or_inbox_id (candidate reader). Otherwise receipts
+// are skipped to avoid attributing reads to the wrong user.
+func (tc *TikTokClient) dispatchWSReadReceipt(rr *libtiktok.WSReadReceipt) {
+	log := tc.userLogin.Log.With().
+		Str("component", "connector-dispatch").
+		Str("conversation_id", rr.ConversationID).
+		Uint64("read_server_message_id", rr.ReadServerMessageID).
+		Logger()
+
+	if rr.ReaderUserID == "" {
+		log.Debug().Msg("Skipping read receipt: no reader user id (peer_or_inbox_id)")
+		return
+	}
+
+	msgID := networkid.MessageID(strconv.FormatUint(rr.ReadServerMessageID, 10))
+	readUpTo := time.Now()
+	if rr.ReadTimestampUs > 0 {
+		readUpTo = time.UnixMicro(int64(rr.ReadTimestampUs))
+	}
+	readerUID := rr.ReaderUserID
+
+	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Receipt{
+		EventMeta: simplevent.EventMeta{
+			Type: bridgev2.RemoteEventReadReceipt,
+			LogContext: func(c zerolog.Context) zerolog.Context {
+				return c.
+					Str("conversation_id", rr.ConversationID).
+					Str("reader_user_id", readerUID).
+					Uint64("message_id", rr.ReadServerMessageID)
+			},
+			PortalKey: networkid.PortalKey{
+				ID:       makePortalID(rr.ConversationID),
+				Receiver: tc.userLogin.ID,
+			},
+			Sender: bridgev2.EventSender{
+				IsFromMe: readerUID == tc.meta.UserID,
+				Sender:   makeUserID(readerUID),
+			},
+			Timestamp: readUpTo,
+		},
+		LastTarget: msgID,
+		Targets:    []networkid.MessageID{msgID},
+		ReadUpTo:   readUpTo,
+	})
+	log.Debug().Str("reader_id", readerUID).Msg("Queued remote read receipt")
+}

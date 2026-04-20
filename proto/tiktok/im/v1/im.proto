@@ -883,6 +883,7 @@ message WebsocketFrame {
 //
 // field 1 identifies the inner event type. The bridge currently handles:
 // - 500: chat message
+// - 501: read receipt (commands.read_receipt)
 // - 705: property mutation (reactions)
 message WebsocketEnvelope {
   optional uint64 inner_type = 1;
@@ -892,7 +893,23 @@ message WebsocketEnvelope {
 // WebSocket command container.
 message WebsocketCommands {
   optional WebsocketChat chat = 500;
+  // inner_type 501: which message was read, in which conversation.
+  optional WebsocketReadReceipt read_receipt = 501;
   optional WebsocketPropertyUpdate property_update = 705;
+}
+
+// Read receipt carried by inner_type 501 (field commands.read_receipt).
+// Field meanings are partially inferred from captures; unknown fields may exist.
+message WebsocketReadReceipt {
+  optional string conversation_id = 1;
+  optional uint32 reserved_2 = 2;
+  // Observed scale consistent with Unix microseconds (read cursor time).
+  optional uint64 read_timestamp_us = 3;
+  // In 1:1 captures this matched the trailing numeric segment of conversation_id;
+  // treated as candidate reader / peer id until group chats are verified.
+  optional uint64 peer_or_inbox_id = 5;
+  // Server message id that was read (read-up-to / target).
+  optional uint64 read_server_message_id = 6;
 }
 
 // WebSocket chat event container.

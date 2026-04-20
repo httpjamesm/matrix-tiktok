@@ -1,6 +1,7 @@
 package libtiktok
 
 import (
+	"context"
 	"testing"
 
 	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
@@ -117,5 +118,111 @@ func TestTryParseWSDeleteForEveryone(t *testing.T) {
 	}
 	if d.OnlyForMe {
 		t.Fatal("expected OnlyForMe=false")
+	}
+}
+
+func TestParseReadReceiptEvent(t *testing.T) {
+	const (
+		convID = "0:1:1000000000000000001:2000000000000000002"
+		peerID = uint64(2000000000000000002)
+		msgID  = uint64(9007199254740994)
+		tsUs   = uint64(1_640_000_000_000_000)
+	)
+	reserved2 := uint32(1)
+	innerType := uint64(501)
+	env := &tiktokpb.WebsocketEnvelope{
+		InnerType: &innerType,
+		Commands: &tiktokpb.WebsocketCommands{
+			ReadReceipt: &tiktokpb.WebsocketReadReceipt{
+				ConversationId:      protoString(convID),
+				Reserved_2:          &reserved2,
+				ReadTimestampUs:     protoUint64(tsUs),
+				PeerOrInboxId:       protoUint64(peerID),
+				ReadServerMessageId: protoUint64(msgID),
+			},
+		},
+	}
+
+	evt, err := parseReadReceiptEvent(context.Background(), env)
+	if err != nil {
+		t.Fatalf("parseReadReceiptEvent: %v", err)
+	}
+	if evt == nil || evt.ReadReceipt == nil {
+		t.Fatalf("expected read receipt event, got evt=%v", evt)
+	}
+	rr := evt.ReadReceipt
+	if rr.ConversationID != convID {
+		t.Fatalf("ConversationID: got %q", rr.ConversationID)
+	}
+	if rr.ReadServerMessageID != msgID {
+		t.Fatalf("ReadServerMessageID: got %d want %d", rr.ReadServerMessageID, msgID)
+	}
+	if rr.ReadTimestampUs != tsUs {
+		t.Fatalf("ReadTimestampUs: got %d want %d", rr.ReadTimestampUs, tsUs)
+	}
+	if rr.ReaderUserID != "2000000000000000002" {
+		t.Fatalf("ReaderUserID: got %q", rr.ReaderUserID)
+	}
+	if rr.Reserved2 != 1 {
+		t.Fatalf("Reserved2: got %d", rr.Reserved2)
+	}
+}
+
+func TestParseReadReceiptEventNilWhenMissingReadReceipt(t *testing.T) {
+	innerType := uint64(501)
+	env := &tiktokpb.WebsocketEnvelope{
+		InnerType: &innerType,
+		Commands:  &tiktokpb.WebsocketCommands{},
+	}
+	evt, err := parseReadReceiptEvent(context.Background(), env)
+	if err != nil {
+		t.Fatalf("parseReadReceiptEvent: %v", err)
+	}
+	if evt != nil {
+		t.Fatalf("expected nil event, got %#v", evt)
+	}
+}
+
+func TestParseReadReceiptEventNilWhenMissingConversationID(t *testing.T) {
+	innerType := uint64(501)
+	env := &tiktokpb.WebsocketEnvelope{
+		InnerType: &innerType,
+		Commands: &tiktokpb.WebsocketCommands{
+			ReadReceipt: &tiktokpb.WebsocketReadReceipt{
+				ReadServerMessageId: protoUint64(42),
+				PeerOrInboxId:       protoUint64(7),
+			},
+		},
+	}
+	evt, err := parseReadReceiptEvent(context.Background(), env)
+	if err != nil {
+		t.Fatalf("parseReadReceiptEvent: %v", err)
+	}
+	if evt != nil {
+		t.Fatalf("expected nil event, got %#v", evt)
+	}
+}
+
+func TestParseReadReceiptEventReaderEmptyWhenPeerZero(t *testing.T) {
+	innerType := uint64(501)
+	convID := "0:1:1:2"
+	env := &tiktokpb.WebsocketEnvelope{
+		InnerType: &innerType,
+		Commands: &tiktokpb.WebsocketCommands{
+			ReadReceipt: &tiktokpb.WebsocketReadReceipt{
+				ConversationId:      protoString(convID),
+				ReadServerMessageId: protoUint64(99),
+			},
+		},
+	}
+	evt, err := parseReadReceiptEvent(context.Background(), env)
+	if err != nil {
+		t.Fatalf("parseReadReceiptEvent: %v", err)
+	}
+	if evt == nil || evt.ReadReceipt == nil {
+		t.Fatal("expected event")
+	}
+	if evt.ReadReceipt.ReaderUserID != "" {
+		t.Fatalf("ReaderUserID: got %q want empty", evt.ReadReceipt.ReaderUserID)
 	}
 }

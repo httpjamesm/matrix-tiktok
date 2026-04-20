@@ -20,11 +20,23 @@ import (
 )
 
 // WSEvent is the unit of communication between libtiktok and the connector
-// layer. At most one of Message, Reaction, or Deletion is non-nil.
+// layer. At most one of Message, Reaction, Deletion, or ReadReceipt is non-nil.
 type WSEvent struct {
-	Message  *WSMessage
-	Reaction *WSReactionEvent
-	Deletion *WSMessageDeletion
+	Message     *WSMessage
+	Reaction    *WSReactionEvent
+	Deletion    *WSMessageDeletion
+	ReadReceipt *WSReadReceipt
+}
+
+// WSReadReceipt is an inner_type 501 command (commands.read_receipt).
+type WSReadReceipt struct {
+	ConversationID      string
+	ReadServerMessageID uint64
+	// ReadTimestampUs is the read cursor time when non-zero (wire scale: Unix µs).
+	ReadTimestampUs uint64
+	// ReaderUserID is set from peer_or_inbox_id when non-zero (see im.proto).
+	ReaderUserID string
+	Reserved2    uint32
 }
 
 // WSMessage carries a single inbound chat event.
@@ -207,6 +219,9 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSEvent, error
 	case 500:
 		log.Debug().Uint64("inner_type", innerType).Msg("Dispatching websocket frame to chat-event parser")
 		return c.parseChatEvent(ctx, &env)
+	case 501:
+		log.Debug().Uint64("inner_type", innerType).Msg("Dispatching websocket frame to read-receipt parser")
+		return parseReadReceiptEvent(ctx, &env)
 	case 705:
 		log.Debug().Uint64("inner_type", innerType).Msg("Dispatching websocket frame to property-update parser")
 		return c.parsePropertyUpdateEvent(ctx, &env)
@@ -219,6 +234,43 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSEvent, error
 		}
 		return nil, nil
 	}
+}
+
+// parseReadReceiptEvent handles inner_type 501 (read receipt command).
+func parseReadReceiptEvent(ctx context.Context, env *tiktokpb.WebsocketEnvelope) (*WSEvent, error) {
+	log := zerolog.Ctx(ctx)
+	rr := env.GetCommands().GetReadReceipt()
+	if rr == nil {
+		log.Warn().Msg("WS 501: read_receipt command missing — dropping frame")
+		return nil, nil
+	}
+	convID := rr.GetConversationId()
+	msgID := rr.GetReadServerMessageId()
+	if convID == "" || msgID == 0 {
+		log.Warn().
+			Str("conversation_id", convID).
+			Uint64("read_server_message_id", msgID).
+			Msg("WS 501: read receipt missing conversation_id or message id — dropping frame")
+		return nil, nil
+	}
+	reader := ""
+	if peer := rr.GetPeerOrInboxId(); peer != 0 {
+		reader = strconv.FormatUint(peer, 10)
+	}
+	out := &WSReadReceipt{
+		ConversationID:      convID,
+		ReadServerMessageID: msgID,
+		ReadTimestampUs:     rr.GetReadTimestampUs(),
+		ReaderUserID:        reader,
+		Reserved2:           rr.GetReserved_2(),
+	}
+	log.Debug().
+		Str("conversation_id", convID).
+		Uint64("read_server_message_id", msgID).
+		Str("reader_user_id", reader).
+		Uint64("read_timestamp_us", out.ReadTimestampUs).
+		Msg("WS 501: read receipt")
+	return &WSEvent{ReadReceipt: out}, nil
 }
 
 // wsContentCommandJSON is a non-chat command envelope in
