@@ -43,3 +43,4 @@ This repository is a Matrix bridge for TikTok messaging. Most work falls into on
 - If you change protobuf schemas, regenerate code before testing.
 - Do not hand-edit generated `.pb.go` files.
 - After regenerating protobufs, run the relevant tests only after confirming the checked-in generated file was updated in place.
+- When writing or updating tests, use synthetic fixture data instead of captured real TikTok identifiers or secrets (for example user IDs, conversation IDs, `sec_uid` values, device IDs, cookies, or signed media URLs).

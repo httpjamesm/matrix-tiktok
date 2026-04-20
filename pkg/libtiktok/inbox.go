@@ -15,6 +15,9 @@ type Conversation struct {
 	ID           string   // 0:1:X:Y
 	SourceID     uint64   // 5: from get_by_user_init
 	Participants []string // user IDs
+	// Name is the explicit conversation title when TikTok provides one.
+	// Group chats currently expose this under detail.core.title; DMs leave it empty.
+	Name string
 	// ConversationType is the wire conversation_type value: 1 for DMs, 2 for group chats.
 	ConversationType uint64
 }
@@ -294,6 +297,9 @@ func mergeInboxConversations(existing, incoming []Conversation) []Conversation {
 		if idx, ok := indexByID[conv.ID]; ok {
 			if existing[idx].SourceID == 0 {
 				existing[idx].SourceID = conv.SourceID
+			}
+			if existing[idx].Name == "" && conv.Name != "" {
+				existing[idx].Name = conv.Name
 			}
 			if conv.ConversationType != 0 {
 				existing[idx].ConversationType = conv.ConversationType

@@ -39,6 +39,7 @@ type TikTokClient struct {
 	mu         sync.Mutex
 	lastSeen   map[string]int64  // convID → highest dispatched message timestamp (ms)
 	otherUsers map[string]string // convID → other participant's TikTok user ID
+	groupNames map[string]string // convID → explicit TikTok group title
 }
 
 // newTikTokClient is the canonical constructor used by both LoadUserLogin and
@@ -51,7 +52,72 @@ func newTikTokClient(connector *TikTokConnector, userLogin *bridgev2.UserLogin, 
 		apiClient:  libtiktok.NewClient(meta.Cookies),
 		lastSeen:   make(map[string]int64),
 		otherUsers: make(map[string]string),
+		groupNames: make(map[string]string),
 	}
+}
+
+func (tc *TikTokClient) buildGroupChatInfo(conv *libtiktok.Conversation) *bridgev2.ChatInfo {
+	if conv == nil || conv.ConversationType != 2 || conv.Name == "" {
+		return nil
+	}
+	name := conv.Name
+	return &bridgev2.ChatInfo{
+		Name: &name,
+		ExtraUpdates: func(ctx context.Context, portal *bridgev2.Portal) bool {
+			meta, _ := portal.Metadata.(*PortalMetadata)
+			if meta == nil {
+				meta = &PortalMetadata{}
+				portal.Metadata = meta
+			}
+			changed := false
+			if meta.ConversationID != conv.ID {
+				meta.ConversationID = conv.ID
+				changed = true
+			}
+			if meta.SourceID != conv.SourceID {
+				meta.SourceID = conv.SourceID
+				changed = true
+			}
+			if meta.ConversationType != conv.ConversationType {
+				meta.ConversationType = conv.ConversationType
+				changed = true
+			}
+			if meta.GroupName != conv.Name {
+				meta.GroupName = conv.Name
+				changed = true
+			}
+			return changed
+		},
+	}
+}
+
+func (tc *TikTokClient) queueGroupNameUpdate(conv *libtiktok.Conversation) {
+	info := tc.buildGroupChatInfo(conv)
+	if info == nil {
+		return
+	}
+	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.ChatInfoChange{
+		EventMeta: simplevent.EventMeta{
+			Type: bridgev2.RemoteEventChatInfoChange,
+			LogContext: func(c zerolog.Context) zerolog.Context {
+				return c.
+					Str("conversation_id", conv.ID).
+					Str("group_name", conv.Name)
+			},
+			PortalKey: networkid.PortalKey{
+				ID:       makePortalID(conv.ID),
+				Receiver: tc.userLogin.ID,
+			},
+			Sender: bridgev2.EventSender{
+				IsFromMe: true,
+				Sender:   makeUserID(tc.meta.UserID),
+			},
+			Timestamp: time.Now(),
+		},
+		ChatInfoChange: &bridgev2.ChatInfoChange{
+			ChatInfo: info,
+		},
+	})
 }
 
 // Ensure TikTokClient fully implements the required interfaces.
@@ -237,8 +303,16 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 		log.Info().
 			Str("conv_id", conv.ID).
 			Strs("participants", conv.Participants).
+			Str("name", conv.Name).
 			Uint64("source_id", conv.SourceID).
 			Msg("Processing conversation")
+
+		if conv.Name != "" {
+			tc.mu.Lock()
+			tc.groupNames[conv.ID] = conv.Name
+			tc.mu.Unlock()
+			tc.queueGroupNameUpdate(conv)
+		}
 
 		// Identify the other participant and cache them for GetChatInfo.
 		for _, pid := range conv.Participants {
@@ -551,22 +625,29 @@ func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *
 }
 
 // GetChatInfo returns Matrix room metadata for a bridged TikTok conversation.
-// The other participant is read from the in-memory otherUsers cache populated
-// during fetchAndDispatch. If the conversation hasn't been seen yet (e.g. a
-// portal is being reconstructed from the database on startup), the portal ID
-// is used as a placeholder and the room will refresh on the next poll.
+// For DMs, the other participant is read from the in-memory otherUsers cache
+// populated during fetchAndDispatch. If the conversation hasn't been seen yet
+// (e.g. a portal is being reconstructed from the database on startup), the
+// portal ID is used as a placeholder and the room will refresh on the next poll.
 func (tc *TikTokClient) GetChatInfo(_ context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	meta, _ := portal.Metadata.(*PortalMetadata)
+	isGroup := meta != nil && meta.ConversationType == 2
+
 	tc.mu.Lock()
 	otherUserID := tc.otherUsers[string(portal.ID)]
+	groupName := tc.groupNames[string(portal.ID)]
 	tc.mu.Unlock()
 
+	if groupName == "" && meta != nil {
+		groupName = meta.GroupName
+	}
 	if otherUserID == "" {
 		// Fallback: use the portal ID itself. It's a conversation ID, not a user
 		// ID, but it keeps the room functional until the poller repopulates the cache.
 		otherUserID = string(portal.ID)
 	}
 
-	return &bridgev2.ChatInfo{
+	info := &bridgev2.ChatInfo{
 		Members: &bridgev2.ChatMemberList{
 			IsFull: true,
 			Members: []bridgev2.ChatMember{
@@ -587,7 +668,24 @@ func (tc *TikTokClient) GetChatInfo(_ context.Context, portal *bridgev2.Portal) 
 				},
 			},
 		},
-	}, nil
+	}
+	if isGroup && groupName != "" {
+		info.Name = &groupName
+		info.ExtraUpdates = func(ctx context.Context, portal *bridgev2.Portal) bool {
+			meta, _ := portal.Metadata.(*PortalMetadata)
+			if meta == nil {
+				meta = &PortalMetadata{}
+				portal.Metadata = meta
+			}
+			changed := false
+			if meta.GroupName != groupName {
+				meta.GroupName = groupName
+				changed = true
+			}
+			return changed
+		}
+	}
+	return info, nil
 }
 
 // GetUserInfo fetches live profile data for a TikTok ghost user.
@@ -1021,6 +1119,7 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 			return &libtiktok.Conversation{
 				ID:               convID,
 				SourceID:         meta.SourceID,
+				Name:             meta.GroupName,
 				ConversationType: meta.ConversationType,
 			}, nil
 		}
@@ -1041,6 +1140,7 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 		}
 		meta.ConversationID = convs[i].ID
 		meta.SourceID = convs[i].SourceID
+		meta.GroupName = convs[i].Name
 		meta.ConversationType = convs[i].ConversationType
 		if err := portal.Save(ctx); err != nil {
 			return nil, fmt.Errorf("cache TikTok portal metadata: %w", err)

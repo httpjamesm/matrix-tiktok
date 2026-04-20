@@ -132,6 +132,8 @@ type PortalMetadata struct {
 	// SourceID is the extra TikTok conversation identifier required by follow-up
 	// APIs like history fetch and message reactions.
 	SourceID uint64 `json:"source_id,omitempty"`
+	// GroupName is the explicit TikTok group title when one exists.
+	GroupName string `json:"group_name,omitempty"`
 	// ConversationType is the wire conversation_type value: 1 for DMs, 2 for group chats.
 	// Used to set message_kind correctly when sending outbound messages.
 	ConversationType uint64 `json:"conversation_type,omitempty"`

@@ -144,6 +144,7 @@ func parseConversationDetailProto(detail *tiktokpb.InboxConversationDetail) (Con
 	if conversationType == 0 {
 		conversationType = detail.GetCore().GetConversationType()
 	}
+	name := detail.GetCore().GetTitle()
 
 	participants := make([]string, 0, len(detail.GetMembers().GetEntries()))
 	for _, member := range detail.GetMembers().GetEntries() {
@@ -163,6 +164,7 @@ func parseConversationDetailProto(detail *tiktokpb.InboxConversationDetail) (Con
 		ID:               convID,
 		SourceID:         sourceID,
 		Participants:     participants,
+		Name:             name,
 		ConversationType: conversationType,
 	}, nil
 }
