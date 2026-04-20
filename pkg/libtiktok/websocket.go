@@ -205,8 +205,10 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSEvent, error
 
 	switch innerType {
 	case 500:
+		log.Debug().Uint64("inner_type", innerType).Msg("Dispatching websocket frame to chat-event parser")
 		return c.parseChatEvent(ctx, &env)
 	case 705:
+		log.Debug().Uint64("inner_type", innerType).Msg("Dispatching websocket frame to property-update parser")
 		return c.parsePropertyUpdateEvent(ctx, &env)
 	default:
 		if innerType != 0 {
@@ -347,20 +349,23 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 	// Check tags for s:property_modify — if present this is a reaction event
 	// disguised as a type-500 frame, not a real chat message.
 	if evt := c.tryParseReactionFromTags(ctx, convID, detail.GetTags()); evt != nil {
+		log.Debug().
+			Str("conversation_id", convID).
+			Msg("WS 500 frame produced reaction event from metadata tags")
 		return evt, nil
 	}
 
 	if handled, delEvt := tryParseWSDeleteForEveryone(chat, detail); handled {
 		if delEvt != nil {
 			log.Debug().
-				Str("conv_id", delEvt.Deletion.ConversationID).
-				Uint64("deleted_message_id", delEvt.Deletion.DeletedMessageID).
+				Str("conversation_id", delEvt.Deletion.ConversationID).
+				Uint64("message_id", delEvt.Deletion.DeletedMessageID).
 				Bool("only_for_me", delEvt.Deletion.OnlyForMe).
 				Msg("WS 500: message recall/delete-for-everyone event")
 			return delEvt, nil
 		}
 		log.Warn().
-			Str("conv_id", convID).
+			Str("conversation_id", convID).
 			Msg("WS 500: message recall event missing target message ID — dropping frame")
 		return nil, nil
 	}
@@ -368,21 +373,21 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 	if handled, delEvt := tryParseWSDeleteForSelf(chat, detail); handled {
 		if delEvt != nil {
 			log.Debug().
-				Str("conv_id", delEvt.Deletion.ConversationID).
-				Uint64("deleted_message_id", delEvt.Deletion.DeletedMessageID).
+				Str("conversation_id", delEvt.Deletion.ConversationID).
+				Uint64("message_id", delEvt.Deletion.DeletedMessageID).
 				Bool("only_for_me", delEvt.Deletion.OnlyForMe).
 				Msg("WS 500: message delete-for-self command")
 			return delEvt, nil
 		}
 		log.Warn().
-			Str("conv_id", convID).
+			Str("conversation_id", convID).
 			Msg("WS 500: message delete-for-self command (command_type=2) missing conversation_id or message_id — dropping frame")
 		return nil, nil
 	}
 
 	if shouldSkipSyncedMessage(detail.GetTags()) {
 		log.Debug().
-			Str("conv_id", convID).
+			Str("conversation_id", convID).
 			Msg("WS 500: skipping recalled/invisible message row")
 		return nil, nil
 	}
@@ -435,12 +440,12 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 	rawJSON := append([]byte(nil), wsContent...)
 
 	dbg := log.Debug().
-		Str("conv_id", convID).
+		Str("conversation_id", convID).
 		Str("sender_id", senderID).
-		Str("msg_type", msgType).
-		Uint64("server_msg_id", numericMsgID)
+		Str("message_type", msgType).
+		Uint64("server_message_id", numericMsgID)
 	if replyTo != 0 {
-		dbg = dbg.Uint64("reply_to_server_msg_id", replyTo)
+		dbg = dbg.Uint64("reply_to_server_message_id", replyTo)
 	}
 	dbg.Msg("WS 500: chat message")
 
@@ -495,21 +500,21 @@ func (c *Client) tryParseReactionFromTags(ctx context.Context, convID string, ta
 	}
 
 	log.Debug().
-		Str("conv_id", convID).
-		Str("property_json", string(propertyJSON)).
+		Str("conversation_id", convID).
+		Int("property_json_len", len(propertyJSON)).
 		Msg("WS 500: frame contains s:property_modify — treating as reaction")
 
 	var prop propertyModify
 	if err := json.Unmarshal(propertyJSON, &prop); err != nil {
 		log.Warn().Err(err).
-			Str("conv_id", convID).
+			Str("conversation_id", convID).
 			Msg("Failed to parse s:property_modify JSON from type-500 frame")
 		return nil
 	}
 
 	log.Debug().
-		Str("conv_id", convID).
-		Uint64("user_id", prop.UserId).
+		Str("conversation_id", convID).
+		Uint64("sender_user_id", prop.UserId).
 		Uint64("server_message_id", prop.ServerMessageId).
 		Int("modify_count", len(prop.Modifys)).
 		Msg("WS 500: parsed property_modify")
@@ -535,10 +540,10 @@ func (c *Client) tryParseReactionFromTags(ctx context.Context, convID string, ta
 		senderUID = strconv.FormatUint(prop.UserId, 10)
 	}
 
-	log.Info().
-		Str("conv_id", convID).
+	log.Debug().
+		Str("conversation_id", convID).
 		Uint64("server_message_id", serverMsgID).
-		Str("sender_user_id", senderUID).
+		Str("sender_id", senderUID).
 		Int("reaction_count", len(mods)).
 		Msg("WS 500: reaction event extracted from property_modify")
 
@@ -583,7 +588,7 @@ func (c *Client) parsePropertyUpdateEvent(ctx context.Context, env *tiktokpb.Web
 	}
 
 	log.Debug().
-		Str("conv_id", convID).
+		Str("conversation_id", convID).
 		Strs("tag_keys", tagKeys).
 		Int("property_json_len", len(propertyJSON)).
 		Str("server_msg_id_tag", serverMsgIDStr).
@@ -591,34 +596,34 @@ func (c *Client) parsePropertyUpdateEvent(ctx context.Context, env *tiktokpb.Web
 
 	if len(propertyJSON) == 0 {
 		log.Debug().
-			Str("conv_id", convID).
+			Str("conversation_id", convID).
 			Msg("WS 705: no s:property_modify tag found")
 		return nil, nil
 	}
 
-	log.Debug().
-		Str("conv_id", convID).
-		Str("property_json", string(propertyJSON)).
-		Msg("WS 705: raw property_modify JSON")
+	log.Trace().
+		Str("conversation_id", convID).
+		Int("property_json_len", len(propertyJSON)).
+		Msg("WS 705: raw property_modify JSON available")
 
 	var prop propertyModify
 	if err := json.Unmarshal(propertyJSON, &prop); err != nil {
 		log.Warn().Err(err).
-			Str("conv_id", convID).
+			Str("conversation_id", convID).
 			Msg("Failed to parse s:property_modify JSON")
 		return nil, nil
 	}
 
 	log.Debug().
-		Str("conv_id", convID).
-		Uint64("user_id", prop.UserId).
+		Str("conversation_id", convID).
+		Uint64("sender_user_id", prop.UserId).
 		Uint64("server_message_id", prop.ServerMessageId).
 		Int("modify_count", len(prop.Modifys)).
 		Msg("WS 705: parsed property_modify")
 
 	if len(prop.Modifys) == 0 {
 		log.Debug().
-			Str("conv_id", convID).
+			Str("conversation_id", convID).
 			Msg("WS 705: Modifys array is empty")
 		return nil, nil
 	}
@@ -633,7 +638,7 @@ func (c *Client) parsePropertyUpdateEvent(ctx context.Context, env *tiktokpb.Web
 	mods := deduplicateModifications(prop.Modifys)
 	if len(mods) == 0 {
 		log.Debug().
-			Str("conv_id", convID).
+			Str("conversation_id", convID).
 			Msg("WS 705: no valid reaction modifications after filtering")
 		return nil, nil
 	}
@@ -643,10 +648,10 @@ func (c *Client) parsePropertyUpdateEvent(ctx context.Context, env *tiktokpb.Web
 		senderUID = strconv.FormatUint(prop.UserId, 10)
 	}
 
-	log.Info().
-		Str("conv_id", convID).
+	log.Debug().
+		Str("conversation_id", convID).
 		Uint64("server_message_id", serverMsgID).
-		Str("sender_user_id", senderUID).
+		Str("sender_id", senderUID).
 		Int("reaction_count", len(mods)).
 		Msg("WS 705: reaction event parsed successfully")
 
@@ -727,7 +732,14 @@ func (c *Client) ConnectWebSocket(ctx context.Context) (<-chan WSEvent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("derive WS URL: %w", err)
 	}
-	log.Debug().Str("url", wsURL).Msg("Dialling TikTok IM WebSocket")
+	if parsed, parseErr := url.Parse(wsURL); parseErr == nil {
+		log.Debug().
+			Str("ws_host", parsed.Host).
+			Str("ws_path", parsed.Path).
+			Msg("Dialling TikTok IM WebSocket")
+	} else {
+		log.Debug().Msg("Dialling TikTok IM WebSocket")
+	}
 
 	cookie := c.rIA.Header.Get("Cookie")
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
@@ -764,11 +776,23 @@ func (c *Client) ConnectWebSocket(ctx context.Context) (<-chan WSEvent, error) {
 				continue
 			}
 			if evt == nil {
+				log.Trace().Int("frame_bytes", len(data)).Msg("Ignoring websocket frame with no bridged event")
 				continue
 			}
+			eventType := "unknown"
+			switch {
+			case evt.Message != nil:
+				eventType = "message"
+			case evt.Reaction != nil:
+				eventType = "reaction"
+			case evt.Deletion != nil:
+				eventType = "deletion"
+			}
+			log.Debug().Str("event_type", eventType).Msg("Parsed websocket frame into bridge event")
 
 			select {
 			case ch <- *evt:
+				log.Debug().Str("event_type", eventType).Msg("Forwarded websocket event to connector channel")
 			case <-ctx.Done():
 				return
 			}

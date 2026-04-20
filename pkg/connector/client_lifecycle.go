@@ -13,7 +13,8 @@ import (
 // delivery. Errors are reported via BridgeState rather than returned
 // (mautrix-go March 2025 convention).
 func (tc *TikTokClient) Connect(ctx context.Context) {
-	log := zerolog.Ctx(ctx)
+	log := zerolog.Ctx(ctx).With().Str("component", "connector-lifecycle").Logger()
+	ctx = log.WithContext(ctx)
 
 	if _, err := tc.apiClient.GetSelf(ctx); err != nil {
 		tc.userLogin.BridgeState.Send(status.BridgeState{
@@ -34,8 +35,11 @@ func (tc *TikTokClient) Connect(ctx context.Context) {
 	// populates the otherUsers cache so GetChatInfo works immediately.
 	// The WebSocket only delivers events that arrive after it connects, so
 	// this ensures nothing is missed during startup.
+	log.Debug().Msg("Starting initial REST backfill before websocket connect")
 	if err := tc.fetchAndDispatch(ctx); err != nil {
 		log.Warn().Err(err).Msg("Initial REST backfill failed, proceeding to WebSocket anyway")
+	} else {
+		log.Debug().Msg("Initial REST backfill completed")
 	}
 
 	tc.isConnected = true
@@ -92,6 +96,7 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 				if backoff > maxBackoff {
 					backoff = maxBackoff
 				}
+				log.Debug().Dur("next_retry_in", backoff).Msg("WebSocket reconnect backoff updated")
 				continue
 			}
 		}
@@ -104,32 +109,36 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 			case evt.Message != nil:
 				wsMsg := evt.Message
 				log.Debug().
-					Str("conv_id", wsMsg.Conversation.ID).
+					Str("conversation_id", wsMsg.Conversation.ID).
 					Str("sender_id", wsMsg.Message.SenderID).
 					Str("type", wsMsg.Message.Type).
-					Uint64("server_id", wsMsg.Message.ServerID).
+					Uint64("server_message_id", wsMsg.Message.ServerID).
 					Msg("WS event: chat message")
 				if wsMsg.Message.SenderID != tc.meta.UserID {
 					tc.mu.Lock()
 					tc.otherUsers[wsMsg.Conversation.ID] = wsMsg.Message.SenderID
 					tc.mu.Unlock()
+					log.Debug().
+						Str("conversation_id", wsMsg.Conversation.ID).
+						Str("other_user_id", wsMsg.Message.SenderID).
+						Msg("Updated other-user cache from websocket message")
 				}
 				tc.dispatchMessage(&wsMsg.Conversation, wsMsg.Message)
 			case evt.Reaction != nil:
 				r := evt.Reaction
-				log.Info().
-					Str("conv_id", r.ConversationID).
+				log.Debug().
+					Str("conversation_id", r.ConversationID).
 					Uint64("server_message_id", r.ServerMessageID).
-					Str("sender_user_id", r.SenderUserID).
+					Str("sender_id", r.SenderUserID).
 					Int("modifications", len(r.Modifications)).
 					Msg("WS event: reaction property update")
 				tc.dispatchWSReaction(evt.Reaction)
 			case evt.Deletion != nil:
 				d := evt.Deletion
-				log.Info().
-					Str("conv_id", d.ConversationID).
-					Uint64("deleted_message_id", d.DeletedMessageID).
-					Str("deleter_user_id", d.DeleterUserID).
+				log.Debug().
+					Str("conversation_id", d.ConversationID).
+					Uint64("message_id", d.DeletedMessageID).
+					Str("sender_id", d.DeleterUserID).
 					Bool("only_for_me", d.OnlyForMe).
 					Msg("WS event: message deleted on TikTok")
 				tc.dispatchWSMessageDeletion(d)

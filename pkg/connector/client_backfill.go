@@ -129,23 +129,24 @@ func (tc *TikTokClient) queueGroupNameUpdate(conv *libtiktok.Conversation) {
 //  1. The in-memory lastSeen map suppresses re-dispatches within a process lifetime.
 //  2. The bridge database deduplicates by message ID across restarts.
 func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
-	log := zerolog.Ctx(ctx)
+	log := zerolog.Ctx(ctx).With().Str("component", "connector-backfill").Logger()
+	ctx = log.WithContext(ctx)
 
 	convs, err := tc.apiClient.GetInbox(ctx)
 	if err != nil {
 		return fmt.Errorf("get inbox: %w", err)
 	}
 
-	log.Info().Int("conversations", len(convs)).Msg("Inbox fetched")
+	log.Debug().Int("conversations", len(convs)).Msg("Inbox fetched")
 	if len(convs) == 0 {
-		log.Info().Msg("Inbox is empty — no conversations to process")
+		log.Debug().Msg("Inbox is empty — no conversations to process")
 		return nil
 	}
 
 	for i := range convs {
 		conv := &convs[i]
-		log.Info().
-			Str("conv_id", conv.ID).
+		log.Debug().
+			Str("conversation_id", conv.ID).
 			Strs("participants", conv.Participants).
 			Str("name", conv.Name).
 			Uint64("source_id", conv.SourceID).
@@ -155,6 +156,10 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 			tc.mu.Lock()
 			tc.groupNames[conv.ID] = conv.Name
 			tc.mu.Unlock()
+			log.Debug().
+				Str("conversation_id", conv.ID).
+				Str("group_name", conv.Name).
+				Msg("Updated group-name cache from inbox conversation")
 			tc.queueGroupNameUpdate(conv)
 		}
 
@@ -163,16 +168,16 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 				tc.mu.Lock()
 				tc.otherUsers[conv.ID] = pid
 				tc.mu.Unlock()
-				log.Info().
-					Str("conv_id", conv.ID).
+				log.Debug().
+					Str("conversation_id", conv.ID).
 					Str("other_user_id", pid).
 					Str("self_user_id", tc.meta.UserID).
-					Msg("Identified other participant")
+					Msg("Updated other-user cache from inbox conversation")
 				break
 			}
 		}
 		if err := tc.syncPortalMetadata(ctx, conv); err != nil {
-			log.Err(err).Str("conv_id", conv.ID).Msg("Failed to persist portal metadata for conversation")
+			log.Err(err).Str("conversation_id", conv.ID).Msg("Failed to persist portal metadata for conversation")
 			continue
 		}
 
@@ -182,31 +187,31 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 
 		msgs, _, err := tc.apiClient.GetMessages(ctx, conv, "")
 		if err != nil {
-			log.Err(err).Str("conv_id", conv.ID).Msg("Error fetching messages for conversation")
+			log.Err(err).Str("conversation_id", conv.ID).Msg("Error fetching messages for conversation")
 			continue
 		}
 
-		log.Info().
-			Str("conv_id", conv.ID).
+		log.Debug().
+			Str("conversation_id", conv.ID).
 			Int("messages", len(msgs)).
 			Int64("last_seen_ms", lastSeen).
 			Msg("Fetched messages for conversation")
 
 		var dispatched int
 		for _, msg := range msgs {
-			log.Info().
-				Str("conv_id", conv.ID).
-				Uint64("msg_id", msg.ServerID).
+			msgLog := log.Debug().
+				Str("conversation_id", conv.ID).
+				Uint64("message_id", msg.ServerID).
 				Str("sender_id", msg.SenderID).
 				Str("type", msg.Type).
 				Int64("ts_ms", msg.TimestampMs).
-				Int64("last_seen_ms", lastSeen).
-				Bool("skipped", msg.TimestampMs <= lastSeen).
-				Msg("Considering message")
+				Int64("last_seen_ms", lastSeen)
 
 			if msg.TimestampMs <= lastSeen {
+				msgLog.Bool("skipped", true).Msg("Skipping already-seen message during backfill")
 				continue
 			}
+			msgLog.Bool("skipped", false).Msg("Dispatching backfill message")
 			tc.dispatchMessage(conv, msg)
 			dispatched++
 			if msg.TimestampMs > lastSeen {
@@ -214,14 +219,18 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 			}
 		}
 
-		log.Info().
-			Str("conv_id", conv.ID).
+		log.Debug().
+			Str("conversation_id", conv.ID).
 			Int("dispatched", dispatched).
 			Msg("Finished processing conversation")
 
 		tc.mu.Lock()
 		if lastSeen > tc.lastSeen[conv.ID] {
 			tc.lastSeen[conv.ID] = lastSeen
+			log.Debug().
+				Str("conversation_id", conv.ID).
+				Int64("last_seen_ms", lastSeen).
+				Msg("Updated last-seen cache after backfill")
 		}
 		tc.mu.Unlock()
 	}
@@ -383,10 +392,19 @@ func (tc *TikTokClient) updatePortalMetadata(portal *bridgev2.Portal, conv *libt
 		portal.OtherUserID = wantOtherUserID
 		changed = true
 	}
+	if changed {
+		log.Debug().
+			Str("portal_id", string(portal.ID)).
+			Str("conversation_id", conv.ID).
+			Uint64("source_id", conv.SourceID).
+			Uint64("conversation_type", conv.ConversationType).
+			Msg("Portal metadata changed from TikTok conversation state")
+	}
 	return changed
 }
 
 func (tc *TikTokClient) syncPortalMetadata(ctx context.Context, conv *libtiktok.Conversation) error {
+	log := zerolog.Ctx(ctx)
 	portal, err := tc.userLogin.Bridge.GetPortalByKey(ctx, networkid.PortalKey{
 		ID:       makePortalID(conv.ID),
 		Receiver: tc.userLogin.ID,
@@ -395,15 +413,25 @@ func (tc *TikTokClient) syncPortalMetadata(ctx context.Context, conv *libtiktok.
 		return fmt.Errorf("get portal for metadata sync: %w", err)
 	}
 	if tc.updatePortalMetadata(portal, conv) {
+		log.Debug().
+			Str("portal_id", string(portal.ID)).
+			Str("conversation_id", conv.ID).
+			Msg("Saving updated portal metadata")
 		if err := portal.Save(ctx); err != nil {
 			return fmt.Errorf("save portal metadata: %w", err)
 		}
+	} else {
+		log.Debug().
+			Str("portal_id", string(portal.ID)).
+			Str("conversation_id", conv.ID).
+			Msg("Portal metadata already up to date")
 	}
 	tc.applyPortalMuteState(ctx, portal, conv.Muted)
 	return nil
 }
 
 func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *bridgev2.Portal) (*libtiktok.Conversation, error) {
+	log := zerolog.Ctx(ctx)
 	convID := string(portal.ID)
 	meta, metaOK := portalMeta(portal)
 	if metaOK {
@@ -415,6 +443,10 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 		// even after the DB row gained conversation_type:2, so group flags
 		// (reactions, send envelope) were wrong until the next full metadata refresh.
 		if meta.SourceID != 0 && meta.ConversationType != 0 {
+			log.Debug().
+				Str("portal_id", string(portal.ID)).
+				Str("conversation_id", convID).
+				Msg("Resolved conversation from cached portal metadata")
 			return &libtiktok.Conversation{
 				ID:               convID,
 				SourceID:         meta.SourceID,
@@ -435,10 +467,18 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 		}
 
 		if tc.updatePortalMetadata(portal, &convs[i]) {
+			log.Debug().
+				Str("portal_id", string(portal.ID)).
+				Str("conversation_id", convs[i].ID).
+				Msg("Caching portal metadata discovered via inbox lookup")
 			if err := portal.Save(ctx); err != nil {
 				return nil, fmt.Errorf("cache TikTok portal metadata: %w", err)
 			}
 		}
+		log.Debug().
+			Str("portal_id", string(portal.ID)).
+			Str("conversation_id", convs[i].ID).
+			Msg("Resolved conversation by scanning inbox")
 		return &convs[i], nil
 	}
 

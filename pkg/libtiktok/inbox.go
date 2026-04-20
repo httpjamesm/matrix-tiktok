@@ -398,10 +398,17 @@ func parseInboxResponse(body []byte) ([]Conversation, error) {
 }
 
 func (c *Client) fetchInbox(ctx context.Context, deviceID, msToken, verifyFP string, subCommand uint64) ([]Conversation, error) {
+	log := zerolog.Ctx(ctx).With().Str("component", "libtiktok-inbox").Logger()
+	ctx = log.WithContext(ctx)
 	payload, err := buildInboxPayload(deviceID, msToken, verifyFP, subCommand)
 	if err != nil {
 		return nil, fmt.Errorf("build inbox payload for subcommand %d: %w", subCommand, err)
 	}
+	log.Debug().
+		Uint64("sub_command", subCommand).
+		Str("device_id", deviceID).
+		Int("payload_bytes", len(payload)).
+		Msg("Fetching TikTok inbox subcommand")
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).
@@ -431,6 +438,10 @@ func (c *Client) fetchInbox(ctx context.Context, deviceID, msToken, verifyFP str
 	if err != nil {
 		return nil, fmt.Errorf("parse inbox subcommand %d response: %w", subCommand, err)
 	}
+	log.Debug().
+		Uint64("sub_command", subCommand).
+		Int("conversations", len(convs)).
+		Msg("Fetched TikTok inbox subcommand successfully")
 	return convs, nil
 }
 
@@ -595,6 +606,7 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 // Returns the list of messages and the next-page cursor (field-25 timestamp of
 // the oldest/last returned message, as a decimal string).
 func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte) ([]Message, string, error) {
+	log := zerolog.Ctx(ctx)
 	var resp tiktokpb.GetByConversationResponse
 	if err := unmarshalProto(body, &resp); err != nil {
 		return nil, "", fmt.Errorf("decode top-level response: %w", err)
@@ -610,14 +622,22 @@ func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte)
 	for i, entry := range entries {
 		m, cursorTs, err := parseMessageEntry(ctx, c, entry)
 		if errors.Is(err, errSkipSyncedMessage) {
+			log.Debug().
+				Int("entry_index", i).
+				Int("entries_total", len(entries)).
+				Uint64("cursor_ts_us", cursorTs).
+				Msg("Skipping synced/recalled conversation message entry")
 			if cursorTs != 0 {
 				lastCursorTs = cursorTs
 			}
 			continue
 		}
 		if err != nil {
-			// Log instead of silently dropping so parse regressions are visible.
-			fmt.Printf("libtiktok: parseMessageEntry entry %d/%d: %v\n", i+1, len(entries), err)
+			log.Debug().
+				Err(err).
+				Int("entry_index", i).
+				Int("entries_total", len(entries)).
+				Msg("Failed to parse conversation message entry")
 			continue
 		}
 		messages = append(messages, m)
@@ -644,6 +664,8 @@ func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte)
 // oldest message in the last batch).
 // Returns the messages and the next-page cursor (empty string when exhausted).
 func (c *Client) GetMessages(ctx context.Context, conv *Conversation, cursor string) ([]Message, string, error) {
+	log := zerolog.Ctx(ctx).With().Str("component", "libtiktok-messages").Logger()
+	ctx = log.WithContext(ctx)
 	cookie := c.rIA.Header.Get("Cookie")
 
 	universalData, err := c.getMessagesUniversalData()
@@ -675,6 +697,12 @@ func (c *Client) GetMessages(ctx context.Context, conv *Conversation, cursor str
 	if err != nil {
 		return nil, "", fmt.Errorf("build get_by_conversation payload: %w", err)
 	}
+	log.Debug().
+		Str("conversation_id", conv.ID).
+		Uint64("source_id", conv.SourceID).
+		Uint64("cursor_ts_us", cursorTsUs).
+		Int("payload_bytes", len(payload)).
+		Msg("Fetching TikTok conversation history")
 
 	resp, err := c.rIA.R().
 		SetContext(ctx).
@@ -695,5 +723,10 @@ func (c *Client) GetMessages(ctx context.Context, conv *Conversation, cursor str
 	if err != nil {
 		return nil, "", fmt.Errorf("parse get_by_conversation response: %w", err)
 	}
+	log.Debug().
+		Str("conversation_id", conv.ID).
+		Int("messages", len(messages)).
+		Str("next_cursor", nextCursor).
+		Msg("Fetched TikTok conversation history successfully")
 	return messages, nextCursor, nil
 }

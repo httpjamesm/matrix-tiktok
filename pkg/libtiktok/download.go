@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/rs/zerolog"
 )
 
 // DownloadVideo fetches a TikTok video page, extracts the video play address
@@ -194,13 +196,26 @@ func extractVideoPlayAddr(data map[string]any) (string, error) {
 // (e.g. the libtiktok-test CLI) inspect exactly what is — and is not — present
 // without having to reproduce the fetch logic themselves.
 func (c *Client) FetchVideoScope(ctx context.Context, videoURL string) (map[string]any, error) {
+	log := zerolog.Ctx(ctx).With().Str("component", "libtiktok-video-scope").Logger()
 	resp, err := newScraperClient().R().
 		SetContext(ctx).
 		Get(videoURL)
 	if err != nil {
 		return nil, fmt.Errorf("get video page: %w", err)
 	}
-	fmt.Println(resp.String())
+	if parsed, parseErr := url.Parse(videoURL); parseErr == nil {
+		log.Debug().
+			Str("video_host", parsed.Host).
+			Str("video_path", parsed.Path).
+			Int("status_code", resp.StatusCode()).
+			Int("body_bytes", len(resp.Body())).
+			Msg("Fetched TikTok video page for scope inspection")
+	} else {
+		log.Debug().
+			Int("status_code", resp.StatusCode()).
+			Int("body_bytes", len(resp.Body())).
+			Msg("Fetched TikTok video page for scope inspection")
+	}
 	if resp.IsError() {
 		return nil, fmt.Errorf("video page returned HTTP %d", resp.StatusCode())
 	}

@@ -19,7 +19,8 @@ import (
 
 // HandleMatrixMessage forwards a Matrix message to the TikTok conversation.
 func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
-	log := zerolog.Ctx(ctx)
+	log := zerolog.Ctx(ctx).With().Str("component", "connector-matrix-outbound").Logger()
+	ctx = log.WithContext(ctx)
 
 	content := *msg.Content
 	content.RemoveReplyFallback()
@@ -30,11 +31,20 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	if err != nil {
 		return nil, err
 	}
+	log.Debug().
+		Str("conversation_id", conv.ID).
+		Uint64("source_id", conv.SourceID).
+		Uint64("conversation_type", conv.ConversationType).
+		Str("msgtype", string(content.MsgType)).
+		Bool("has_reply", reply != nil).
+		Msg("Classifying outbound Matrix message")
 
 	if content.MsgType == event.MsgImage {
+		log.Debug().Str("conversation_id", conv.ID).Msg("Routing outbound Matrix message as image")
 		return tc.handleMatrixImageMessage(ctx, msg, conv, &content, reply)
 	}
 	if content.MsgType == event.MsgVideo {
+		log.Debug().Str("conversation_id", conv.ID).Msg("Routing outbound Matrix message as video")
 		return tc.handleMatrixVideoMessage(ctx, msg, conv, &content, reply)
 	}
 	if content.MsgType == event.MsgFile {
@@ -44,15 +54,29 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 		}
 		switch {
 		case strings.HasPrefix(mimeType, "image/"):
+			log.Debug().
+				Str("conversation_id", conv.ID).
+				Str("mime_type", mimeType).
+				Msg("Routing outbound Matrix file as image")
 			return tc.handleMatrixImageMessage(ctx, msg, conv, &content, reply)
 		case strings.HasPrefix(mimeType, "video/"):
+			log.Debug().
+				Str("conversation_id", conv.ID).
+				Str("mime_type", mimeType).
+				Msg("Routing outbound Matrix file as video")
 			return tc.handleMatrixVideoMessage(ctx, msg, conv, &content, reply)
 		case mimeType == "":
+			log.Debug().
+				Str("conversation_id", conv.ID).
+				Msg("Outbound Matrix file has no MIME type; trying image then video handlers")
 			if resp, err := tc.handleMatrixImageMessage(ctx, msg, conv, &content, reply); err == nil {
 				return resp, nil
 			} else if !errors.Is(err, bridgev2.ErrUnsupportedMessageType) {
 				return nil, err
 			}
+			log.Debug().
+				Str("conversation_id", conv.ID).
+				Msg("Image handler rejected MIME-less file; trying video handler")
 			return tc.handleMatrixVideoMessage(ctx, msg, conv, &content, reply)
 		default:
 			return nil, bridgev2.ErrUnsupportedMessageType
@@ -74,6 +98,10 @@ func (tc *TikTokClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.M
 	if err != nil {
 		return nil, fmt.Errorf("send TikTok message: %w", err)
 	}
+	log.Debug().
+		Str("conversation_id", conv.ID).
+		Str("message_id", resp.MessageID).
+		Msg("Sent outbound TikTok text message")
 
 	return &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
@@ -90,6 +118,7 @@ func (tc *TikTokClient) handleMatrixImageMessage(
 	content *event.MessageEventContent,
 	reply *libtiktok.OutgoingMessageReply,
 ) (*bridgev2.MatrixMessageResponse, error) {
+	log := zerolog.Ctx(ctx)
 	if strings.TrimSpace(content.GetCaption()) != "" {
 		return nil, fmt.Errorf("image captions are not yet supported on TikTok")
 	}
@@ -110,6 +139,12 @@ func (tc *TikTokClient) handleMatrixImageMessage(
 	if !strings.HasPrefix(mimeType, "image/") {
 		return nil, bridgev2.ErrUnsupportedMessageType
 	}
+	log.Debug().
+		Str("conversation_id", conv.ID).
+		Str("mime_type", mimeType).
+		Int("bytes", len(data)).
+		Bool("has_reply", reply != nil).
+		Msg("Prepared outbound image payload for TikTok")
 
 	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
 		ConvID:       conv.ID,
@@ -125,6 +160,10 @@ func (tc *TikTokClient) handleMatrixImageMessage(
 	if err != nil {
 		return nil, fmt.Errorf("send TikTok image: %w", err)
 	}
+	log.Debug().
+		Str("conversation_id", conv.ID).
+		Str("message_id", resp.MessageID).
+		Msg("Sent outbound TikTok image message")
 
 	return &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
@@ -141,6 +180,7 @@ func (tc *TikTokClient) handleMatrixVideoMessage(
 	content *event.MessageEventContent,
 	reply *libtiktok.OutgoingMessageReply,
 ) (*bridgev2.MatrixMessageResponse, error) {
+	log := zerolog.Ctx(ctx)
 	if strings.TrimSpace(content.GetCaption()) != "" {
 		return nil, fmt.Errorf("video captions are not yet supported on TikTok")
 	}
@@ -161,6 +201,12 @@ func (tc *TikTokClient) handleMatrixVideoMessage(
 	if !strings.HasPrefix(mimeType, "video/") {
 		return nil, bridgev2.ErrUnsupportedMessageType
 	}
+	log.Debug().
+		Str("conversation_id", conv.ID).
+		Str("mime_type", mimeType).
+		Int("bytes", len(data)).
+		Bool("has_reply", reply != nil).
+		Msg("Prepared outbound video payload for TikTok")
 
 	resp, err := tc.apiClient.SendMessage(ctx, libtiktok.SendMessageParams{
 		ConvID:       conv.ID,
@@ -176,6 +222,10 @@ func (tc *TikTokClient) handleMatrixVideoMessage(
 	if err != nil {
 		return nil, fmt.Errorf("send TikTok video: %w", err)
 	}
+	log.Debug().
+		Str("conversation_id", conv.ID).
+		Str("message_id", resp.MessageID).
+		Msg("Sent outbound TikTok video message")
 
 	return &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
@@ -185,7 +235,7 @@ func (tc *TikTokClient) handleMatrixVideoMessage(
 	}, nil
 }
 
-func (tc *TikTokClient) buildOutgoingReply(log *zerolog.Logger, msg *bridgev2.MatrixMessage) *libtiktok.OutgoingMessageReply {
+func (tc *TikTokClient) buildOutgoingReply(log zerolog.Logger, msg *bridgev2.MatrixMessage) *libtiktok.OutgoingMessageReply {
 	if msg.ReplyTo == nil {
 		return nil
 	}
@@ -209,6 +259,10 @@ func (tc *TikTokClient) buildOutgoingReply(log *zerolog.Logger, msg *bridgev2.Ma
 	var pm *MessageMetadata
 	if raw, ok := msg.ReplyTo.Metadata.(*MessageMetadata); ok {
 		pm = raw
+	} else if msg.ReplyTo.Metadata != nil {
+		log.Debug().
+			Str("reply_metadata_type", fmt.Sprintf("%T", msg.ReplyTo.Metadata)).
+			Msg("Matrix reply target metadata is not TikTok message metadata; using fallback reply fields")
 	}
 	refUID := string(msg.ReplyTo.SenderID)
 	refSec := ""
@@ -223,6 +277,10 @@ func (tc *TikTokClient) buildOutgoingReply(log *zerolog.Logger, msg *bridgev2.Ma
 	}
 	if cursorUs == 0 {
 		cursorUs = uint64(msg.ReplyTo.Timestamp.UnixMicro())
+		log.Debug().
+			Uint64("parent_id", parentID).
+			Uint64("cursor_ts_us", cursorUs).
+			Msg("Matrix reply missing TikTok cursor; using Matrix timestamp fallback")
 	}
 
 	refBytes, err := libtiktok.BuildReplyReferenceJSON(contentJSON, refUID, refSec)
@@ -230,6 +288,11 @@ func (tc *TikTokClient) buildOutgoingReply(log *zerolog.Logger, msg *bridgev2.Ma
 		log.Warn().Err(err).Msg("Failed to build TikTok reply reference JSON; sending as non-reply")
 		return nil
 	}
+	log.Debug().
+		Uint64("parent_id", parentID).
+		Bool("has_sender_sec_uid", refSec != "").
+		Bool("has_content_json", contentJSON != "").
+		Msg("Built TikTok reply envelope from Matrix reply target")
 	return &libtiktok.OutgoingMessageReply{
 		ParentServerMessageID: parentID,
 		ParentSendChainID:     chainID,

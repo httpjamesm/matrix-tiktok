@@ -15,6 +15,11 @@ import (
 // dispatchMessage queues a single TikTok message into the bridgev2 pipeline,
 // followed immediately by a ReactionSync event when the message carries reactions.
 func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtiktok.Message) {
+	log := tc.userLogin.Log.With().
+		Str("component", "connector-dispatch").
+		Str("conversation_id", conv.ID).
+		Uint64("message_id", msg.ServerID).
+		Logger()
 	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Message[libtiktok.Message]{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventMessage,
@@ -39,6 +44,10 @@ func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtik
 		Data:               msg,
 		ConvertMessageFunc: tc.convertMessage,
 	})
+	log.Debug().
+		Str("sender_id", msg.SenderID).
+		Str("message_type", msg.Type).
+		Msg("Queued remote message event")
 	tc.dispatchReactions(conv, msg)
 }
 
@@ -54,6 +63,11 @@ func (tc *TikTokClient) dispatchReactions(conv *libtiktok.Conversation, msg libt
 	if len(msg.Reactions) == 0 {
 		return
 	}
+	log := tc.userLogin.Log.With().
+		Str("component", "connector-dispatch").
+		Str("conversation_id", conv.ID).
+		Uint64("message_id", msg.ServerID).
+		Logger()
 
 	users := make(map[networkid.UserID]*bridgev2.ReactionSyncUser, len(msg.Reactions))
 	for _, r := range msg.Reactions {
@@ -100,6 +114,7 @@ func (tc *TikTokClient) dispatchReactions(conv *libtiktok.Conversation, msg libt
 			HasAllUsers: true,
 		},
 	})
+	log.Debug().Int("reaction_count", len(msg.Reactions)).Msg("Queued reaction sync event")
 }
 
 // dispatchWSReaction queues individual RemoteEventReaction / RemoteEventReactionRemove
@@ -107,7 +122,7 @@ func (tc *TikTokClient) dispatchReactions(conv *libtiktok.Conversation, msg libt
 func (tc *TikTokClient) dispatchWSReaction(evt *libtiktok.WSReactionEvent) {
 	log := tc.userLogin.Log.With().
 		Str("component", "reaction-dispatch").
-		Str("conv_id", evt.ConversationID).
+		Str("conversation_id", evt.ConversationID).
 		Uint64("server_message_id", evt.ServerMessageID).
 		Logger()
 
@@ -123,11 +138,11 @@ func (tc *TikTokClient) dispatchWSReaction(evt *libtiktok.WSReactionEvent) {
 			evtType = bridgev2.RemoteEventReactionRemove
 		}
 
-		log.Info().
+		log.Debug().
 			Str("emoji", mod.Emoji).
 			Int("op", mod.Op).
 			Str("sender_id", senderUID).
-			Str("target_msg_id", string(msgID)).
+			Str("target_message_id", string(msgID)).
 			Str("portal_id", string(makePortalID(evt.ConversationID))).
 			Str("event_type", evtType.String()).
 			Msg("Queuing remote reaction event")
@@ -157,12 +172,24 @@ func (tc *TikTokClient) dispatchWSReaction(evt *libtiktok.WSReactionEvent) {
 			EmojiID:       networkid.EmojiID(mod.Emoji),
 			Emoji:         mod.Emoji,
 		})
+		log.Debug().
+			Str("emoji", mod.Emoji).
+			Int("op", mod.Op).
+			Str("sender_id", senderUID).
+			Str("target_message_id", string(msgID)).
+			Str("event_type", evtType.String()).
+			Msg("Queued remote reaction event")
 	}
 }
 
 // dispatchWSMessageDeletion redacts the bridged Matrix event when a message is
 // removed on TikTok, either as a local hide/delete-for-self or a global recall.
 func (tc *TikTokClient) dispatchWSMessageDeletion(d *libtiktok.WSMessageDeletion) {
+	log := tc.userLogin.Log.With().
+		Str("component", "connector-dispatch").
+		Str("conversation_id", d.ConversationID).
+		Uint64("message_id", d.DeletedMessageID).
+		Logger()
 	deleterUID := d.DeleterUserID
 	if deleterUID == "" {
 		deleterUID = tc.meta.UserID
@@ -194,4 +221,8 @@ func (tc *TikTokClient) dispatchWSMessageDeletion(d *libtiktok.WSMessageDeletion
 		TargetMessage: msgID,
 		OnlyForMe:     d.OnlyForMe,
 	})
+	log.Debug().
+		Str("sender_id", deleterUID).
+		Bool("only_for_me", d.OnlyForMe).
+		Msg("Queued remote message deletion event")
 }
