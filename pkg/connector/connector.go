@@ -190,6 +190,9 @@ func (tc *TikTokConnector) LoadUserLogin(_ context.Context, login *bridgev2.User
 	if !ok {
 		return fmt.Errorf("unexpected metadata type %T for user login %s", login.Metadata, login.ID)
 	}
+	if login.Client != nil {
+		login.Client.Disconnect()
+	}
 	login.Client = newTikTokClient(tc, login, meta)
 	return nil
 }

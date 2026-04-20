@@ -38,9 +38,6 @@ Send an invitation to `@sh-tiktokbot:beeper.local` on Beeper and send "login".
 
 Sign into TikTok Messages, grab your cookie string, and paste it in.
 
-> [!tip]
-> After authentication, you may have to restart the bridge for it to start backfilling and beginning normal operation.
-
 ## Legal Disclaimer
 
 This project involves reverse engineering TikTok's private API for the sole purpose of

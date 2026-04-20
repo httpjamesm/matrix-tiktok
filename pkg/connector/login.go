@@ -98,6 +98,12 @@ func (tl *TikTokLogin) finishLogin(ctx context.Context) (*bridgev2.LoginStep, er
 		return nil, fmt.Errorf("failed to create user login: %w", err)
 	}
 
+	// bridgev2 only invokes Client.Connect from StartLogins (startup) and
+	// reconnect helpers — not after an interactive NewLogin — so we start
+	// the session (REST backfill + websocket) here.
+	connCtx := ul.Log.WithContext(ul.Bridge.BackgroundCtx)
+	go ul.Client.Connect(connCtx)
+
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
 		StepID:       "com.github.httpjamesm.matrix_tiktok.complete",
