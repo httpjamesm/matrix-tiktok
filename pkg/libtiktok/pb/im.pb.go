@@ -618,6 +618,8 @@ func (x *MediaUploadConfigEntry) GetSecretAccessKey() string {
 // Known keys include:
 // - "s:mentioned_users"
 // - "s:client_message_id"
+// - "s:is_recalled" (value "1" on placeholder/history rows for unsent messages)
+// - "s:invisible" (non-empty when the row must not be shown)
 //
 // The value is bytes because TikTok sometimes stores an embedded message here
 // (for example the empty mentioned-users payload) and sometimes plain text.
@@ -2983,7 +2985,7 @@ type ConversationMessageEntry struct {
 	SenderUserId *uint64 `protobuf:"varint,7,opt,name=sender_user_id,json=senderUserId" json:"sender_user_id,omitempty"`
 	// JSON message blob parsed separately by parseMessageContent.
 	ContentJson []byte `protobuf:"bytes,8,opt,name=content_json,json=contentJson" json:"content_json,omitempty"`
-	// Repeated message tags; s:client_message_id is the main one we use.
+	// Field 9: repeated MetadataTag key/value metadata (client_message_id, recall flags, …).
 	Tags []*MetadataTag `protobuf:"bytes,9,rep,name=tags" json:"tags,omitempty"`
 	// Sender sec_uid (TikTok stable user token string).
 	SenderSecUid *string `protobuf:"bytes,14,opt,name=sender_sec_uid,json=senderSecUid" json:"sender_sec_uid,omitempty"`
@@ -6110,7 +6112,7 @@ type WebsocketMessageDetail struct {
 	SenderUserId    *uint64                `protobuf:"varint,7,opt,name=sender_user_id,json=senderUserId" json:"sender_user_id,omitempty"`
 	// JSON message blob parsed separately by parseMessageContent or command handlers.
 	ContentJson []byte `protobuf:"bytes,8,opt,name=content_json,json=contentJson" json:"content_json,omitempty"`
-	// Repeated tag pairs; s:client_message_id is used as the stable message key.
+	// Field 9: repeated MetadataTag metadata (same role as ConversationMessageEntry.tags).
 	Tags         []*MetadataTag `protobuf:"bytes,9,rep,name=tags" json:"tags,omitempty"`
 	SenderSecUid *string        `protobuf:"bytes,14,opt,name=sender_sec_uid,json=senderSecUid" json:"sender_sec_uid,omitempty"`
 	// Same shape as ConversationMessageEntry.message_reply (reply / quote).

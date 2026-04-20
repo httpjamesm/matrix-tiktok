@@ -378,6 +378,13 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 		return nil, nil
 	}
 
+	if shouldSkipSyncedMessage(detail.GetTags()) {
+		log.Debug().
+			Str("conv_id", convID).
+			Msg("WS 500: skipping recalled/invisible message row")
+		return nil, nil
+	}
+
 	numericMsgID := detail.GetServerMessageId()
 	tsUs := int64(detail.GetTimestampUs())
 	senderID := strconv.FormatUint(detail.GetSenderUserId(), 10)

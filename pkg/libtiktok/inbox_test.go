@@ -2,6 +2,7 @@ package libtiktok
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
@@ -441,6 +442,68 @@ func TestParseMessageContent_placeholderHackJSONIsNotText(t *testing.T) {
 	msgType, text, mediaURL, _ := parseMessageContent(ctx, nil, body)
 	if msgType != "" || text != "" || mediaURL != "" {
 		t.Fatalf("parseMessageContent(%q) = type=%q text=%q url=%q, want all empty", body, msgType, text, mediaURL)
+	}
+}
+
+func TestParseMessageEntry_skipRecalledOrInvisible(t *testing.T) {
+	ctx := context.Background()
+	const wantCursor uint64 = 1699999999999000
+	entry := &tiktokpb.ConversationMessageEntry{
+		ConversationId:  protoString(syntheticDMConversationID),
+		ServerMessageId: protoUint64(1),
+		TimestampUs:     protoUint64(1700000000000000),
+		SenderUserId:    protoUint64(1000000000000000007),
+		ContentJson:     []byte(`{"aweType":0,"text":"should not appear"}`),
+		CursorTsUs:      protoUint64(wantCursor),
+		Tags: []*tiktokpb.MetadataTag{
+			{Key: protoString("s:is_recalled"), Value: []byte("1")},
+		},
+	}
+	_, cursor, err := parseMessageEntry(ctx, nil, entry)
+	if !errors.Is(err, errSkipSyncedMessage) {
+		t.Fatalf("parseMessageEntry err = %v, want errSkipSyncedMessage", err)
+	}
+	if cursor != wantCursor {
+		t.Fatalf("cursor = %d, want %d", cursor, wantCursor)
+	}
+
+	const wantCursor2 uint64 = 1699999999998000
+	entry2 := &tiktokpb.ConversationMessageEntry{
+		ConversationId:  protoString(syntheticDMConversationID),
+		ServerMessageId: protoUint64(2),
+		TimestampUs:     protoUint64(1700000000000000),
+		SenderUserId:    protoUint64(1000000000000000007),
+		ContentJson:     []byte(`{"aweType":0,"text":"hidden"}`),
+		CursorTsUs:      protoUint64(wantCursor2),
+		Tags: []*tiktokpb.MetadataTag{
+			{Key: protoString("s:invisible"), Value: []byte("1")},
+		},
+	}
+	_, cursor2, err2 := parseMessageEntry(ctx, nil, entry2)
+	if !errors.Is(err2, errSkipSyncedMessage) {
+		t.Fatalf("parseMessageEntry (s:invisible tag) err = %v, want errSkipSyncedMessage", err2)
+	}
+	if cursor2 != wantCursor2 {
+		t.Fatalf("cursor2 = %d, want %d", cursor2, wantCursor2)
+	}
+
+	entry3 := &tiktokpb.ConversationMessageEntry{
+		ConversationId:  protoString(syntheticDMConversationID),
+		ServerMessageId: protoUint64(3),
+		TimestampUs:     protoUint64(1700000000000000),
+		SenderUserId:    protoUint64(1000000000000000007),
+		ContentJson:     []byte(`{"aweType":0,"text":"visible"}`),
+		CursorTsUs:      protoUint64(1700000000000001),
+		Tags: []*tiktokpb.MetadataTag{
+			{Key: protoString("s:invisible"), Value: []byte("  ")},
+		},
+	}
+	msg3, _, err3 := parseMessageEntry(ctx, nil, entry3)
+	if err3 != nil {
+		t.Fatalf("parseMessageEntry: %v", err3)
+	}
+	if msg3.Text != "visible" {
+		t.Fatalf("text = %q, want visible", msg3.Text)
 	}
 }
 

@@ -61,6 +61,28 @@ func extractClientMsgIDFromTags(tags []*tiktokpb.MetadataTag) string {
 	return ""
 }
 
+// shouldSkipSyncedMessage reports whether a get_by_conversation row or WS chat
+// detail is a recalled or invisible placeholder. TikTok carries these on field 9
+// (repeated MetadataTag tags).
+func shouldSkipSyncedMessage(tags []*tiktokpb.MetadataTag) bool {
+	for _, tag := range tags {
+		if tag == nil {
+			continue
+		}
+		switch tag.GetKey() {
+		case "s:is_recalled":
+			if strings.TrimSpace(string(tag.GetValue())) == "1" {
+				return true
+			}
+		case "s:invisible":
+			if strings.TrimSpace(string(tag.GetValue())) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func parseReactionsProto(entries []*tiktokpb.ReactionSummary) []Reaction {
 	if len(entries) == 0 {
 		return nil

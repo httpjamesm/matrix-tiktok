@@ -94,6 +94,8 @@ message MediaUploadConfigEntry {
 // Known keys include:
 // - "s:mentioned_users"
 // - "s:client_message_id"
+// - "s:is_recalled" (value "1" on placeholder/history rows for unsent messages)
+// - "s:invisible" (non-empty when the row must not be shown)
 //
 // The value is bytes because TikTok sometimes stores an embedded message here
 // (for example the empty mentioned-users payload) and sometimes plain text.
@@ -470,7 +472,7 @@ message ConversationMessageEntry {
   optional uint64 sender_user_id = 7;
   // JSON message blob parsed separately by parseMessageContent.
   optional bytes content_json = 8;
-  // Repeated message tags; s:client_message_id is the main one we use.
+  // Field 9: repeated MetadataTag key/value metadata (client_message_id, recall flags, …).
   repeated MetadataTag tags = 9;
   // Sender sec_uid (TikTok stable user token string).
   optional string sender_sec_uid = 14;
@@ -915,7 +917,7 @@ message WebsocketMessageDetail {
   optional uint64 sender_user_id = 7;
   // JSON message blob parsed separately by parseMessageContent or command handlers.
   optional bytes content_json = 8;
-  // Repeated tag pairs; s:client_message_id is used as the stable message key.
+  // Field 9: repeated MetadataTag metadata (same role as ConversationMessageEntry.tags).
   repeated MetadataTag tags = 9;
   optional string sender_sec_uid = 14;
   // Same shape as ConversationMessageEntry.message_reply (reply / quote).

@@ -3,6 +3,7 @@ package libtiktok
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,10 @@ import (
 	tiktokpb "github.com/httpjamesm/matrix-tiktok/pkg/libtiktok/pb"
 	"github.com/rs/zerolog"
 )
+
+// errSkipSyncedMessage is returned by parseMessageEntry for rows the bridge
+// must not turn into Matrix events (recalled / invisible placeholders).
+var errSkipSyncedMessage = errors.New("skip synced message")
 
 type Conversation struct {
 	ID           string   // 0:1:X:Y
@@ -492,10 +497,14 @@ func buildGetByConversationPayload(deviceID, msToken, verifyFP, convID string, s
 // It returns the Message and the raw field-25 timestamp (µs) used as the
 // pagination cursor.
 func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.ConversationMessageEntry) (Message, uint64, error) {
+	cursorTs := entry.GetCursorTsUs()
+	if shouldSkipSyncedMessage(entry.GetTags()) {
+		return Message{}, cursorTs, errSkipSyncedMessage
+	}
+
 	convID := entry.GetConversationId()
 	senderID := strconv.FormatUint(entry.GetSenderUserId(), 10)
 	tsMicros := entry.GetTimestampUs()
-	cursorTs := entry.GetCursorTsUs()
 	serverID := entry.GetServerMessageId()
 	msgID := extractClientMsgIDFromTags(entry.GetTags())
 	contentJSON := entry.GetContentJson()
@@ -585,6 +594,12 @@ func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte)
 	var lastCursorTs uint64
 	for i, entry := range entries {
 		m, cursorTs, err := parseMessageEntry(ctx, c, entry)
+		if errors.Is(err, errSkipSyncedMessage) {
+			if cursorTs != 0 {
+				lastCursorTs = cursorTs
+			}
+			continue
+		}
 		if err != nil {
 			// Log instead of silently dropping so parse regressions are visible.
 			fmt.Printf("libtiktok: parseMessageEntry entry %d/%d: %v\n", i+1, len(entries), err)
