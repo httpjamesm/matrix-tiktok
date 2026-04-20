@@ -11,10 +11,9 @@ A Matrix bridge for TikTok Messages. Intended for usage with Beeper.
   - [x] Stickers
   - [ ] Voice Notes
   - [x] TikToks
-- [ ] Read receipts
 - [x] Reactions
 - [x] Replies
-- [ ] Group chats
+- [x] Group chats
 - [x] Delete message for everyone
 
 ## Running
@@ -39,7 +38,7 @@ Send an invitation to `@sh-tiktokbot:beeper.local` on Beeper and send "login".
 
 Sign into TikTok Messages, grab your cookie string, and paste it in.
 
-> ![tip]
+> [!tip]
 > After authentication, you may have to restart the bridge for it to start backfilling and beginning normal operation.
 
 ## Legal Disclaimer
