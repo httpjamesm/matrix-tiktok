@@ -328,6 +328,10 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 				break
 			}
 		}
+		if err := tc.syncPortalMetadata(ctx, conv); err != nil {
+			log.Err(err).Str("conv_id", conv.ID).Msg("Failed to persist portal metadata for conversation")
+			continue
+		}
 
 		tc.mu.Lock()
 		lastSeen := tc.lastSeen[conv.ID]
@@ -629,45 +633,61 @@ func (tc *TikTokClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *
 // populated during fetchAndDispatch. If the conversation hasn't been seen yet
 // (e.g. a portal is being reconstructed from the database on startup), the
 // portal ID is used as a placeholder and the room will refresh on the next poll.
-func (tc *TikTokClient) GetChatInfo(_ context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+func (tc *TikTokClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 	meta, _ := portal.Metadata.(*PortalMetadata)
-	isGroup := meta != nil && meta.ConversationType == 2
+	if meta == nil || meta.ConversationType == 0 {
+		if _, err := tc.getConversationForPortal(ctx, portal); err != nil && (meta == nil || meta.ConversationType == 0) {
+			return nil, fmt.Errorf("load TikTok chat info for %s: %w", portal.ID, err)
+		}
+		meta, _ = portal.Metadata.(*PortalMetadata)
+	}
 
 	tc.mu.Lock()
-	otherUserID := tc.otherUsers[string(portal.ID)]
 	groupName := tc.groupNames[string(portal.ID)]
 	tc.mu.Unlock()
 
+	otherUserID := string(portal.OtherUserID)
+	if otherUserID == "" {
+		tc.mu.Lock()
+		otherUserID = tc.otherUsers[string(portal.ID)]
+		tc.mu.Unlock()
+	}
 	if groupName == "" && meta != nil {
 		groupName = meta.GroupName
 	}
-	if otherUserID == "" {
-		// Fallback: use the portal ID itself. It's a conversation ID, not a user
-		// ID, but it keeps the room functional until the poller repopulates the cache.
-		otherUserID = string(portal.ID)
+	isGroup := meta != nil && meta.ConversationType == 2
+	isDM := meta != nil && meta.ConversationType == 1 && otherUserID != ""
+
+	members := []bridgev2.ChatMember{
+		{
+			EventSender: bridgev2.EventSender{
+				IsFromMe: true,
+				Sender:   makeUserID(tc.meta.UserID),
+			},
+			Membership: event.MembershipJoin,
+			PowerLevel: ptrInt(50),
+		},
+	}
+	if otherUserID != "" {
+		members = append(members, bridgev2.ChatMember{
+			EventSender: bridgev2.EventSender{
+				Sender: makeUserID(otherUserID),
+			},
+			Membership: event.MembershipJoin,
+			PowerLevel: ptrInt(50),
+		})
 	}
 
 	info := &bridgev2.ChatInfo{
 		Members: &bridgev2.ChatMemberList{
-			IsFull: true,
-			Members: []bridgev2.ChatMember{
-				{
-					EventSender: bridgev2.EventSender{
-						IsFromMe: true,
-						Sender:   makeUserID(tc.meta.UserID),
-					},
-					Membership: event.MembershipJoin,
-					PowerLevel: ptrInt(50),
-				},
-				{
-					EventSender: bridgev2.EventSender{
-						Sender: makeUserID(otherUserID),
-					},
-					Membership: event.MembershipJoin,
-					PowerLevel: ptrInt(50),
-				},
-			},
+			IsFull:  true,
+			Members: members,
 		},
+	}
+	if isDM {
+		roomType := database.RoomTypeDM
+		info.Type = &roomType
+		info.Members.OtherUserID = makeUserID(otherUserID)
 	}
 	if isGroup && groupName != "" {
 		info.Name = &groupName
@@ -686,6 +706,75 @@ func (tc *TikTokClient) GetChatInfo(_ context.Context, portal *bridgev2.Portal) 
 		}
 	}
 	return info, nil
+}
+
+func (tc *TikTokClient) updatePortalMetadata(portal *bridgev2.Portal, conv *libtiktok.Conversation) bool {
+	if portal == nil || conv == nil {
+		return false
+	}
+	meta, _ := portal.Metadata.(*PortalMetadata)
+	if meta == nil {
+		meta = &PortalMetadata{}
+		portal.Metadata = meta
+	}
+	changed := false
+	if meta.ConversationID != conv.ID {
+		meta.ConversationID = conv.ID
+		changed = true
+	}
+	if meta.SourceID != conv.SourceID {
+		meta.SourceID = conv.SourceID
+		changed = true
+	}
+	if meta.GroupName != conv.Name {
+		meta.GroupName = conv.Name
+		changed = true
+	}
+	if meta.ConversationType != conv.ConversationType {
+		meta.ConversationType = conv.ConversationType
+		changed = true
+	}
+	otherUserID := ""
+	for _, pid := range conv.Participants {
+		if pid != "" && pid != tc.meta.UserID {
+			otherUserID = pid
+			break
+		}
+	}
+	wantRoomType := database.RoomTypeDefault
+	if conv.ConversationType == 1 {
+		wantRoomType = database.RoomTypeDM
+	}
+	if portal.RoomType != wantRoomType {
+		portal.RoomType = wantRoomType
+		changed = true
+	}
+	wantOtherUserID := networkid.UserID("")
+	if conv.ConversationType == 1 {
+		wantOtherUserID = makeUserID(otherUserID)
+	}
+	if portal.OtherUserID != wantOtherUserID {
+		portal.OtherUserID = wantOtherUserID
+		changed = true
+	}
+	return changed
+}
+
+func (tc *TikTokClient) syncPortalMetadata(ctx context.Context, conv *libtiktok.Conversation) error {
+	portal, err := tc.userLogin.Bridge.GetPortalByKey(ctx, networkid.PortalKey{
+		ID:       makePortalID(conv.ID),
+		Receiver: tc.userLogin.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("get portal for metadata sync: %w", err)
+	}
+	if !tc.updatePortalMetadata(portal, conv) {
+		return nil
+	}
+	if err := portal.Save(ctx); err != nil {
+		return fmt.Errorf("save portal metadata: %w", err)
+	}
+	return nil
 }
 
 // GetUserInfo fetches live profile data for a TikTok ghost user.
@@ -1134,16 +1223,10 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 			continue
 		}
 
-		if meta == nil {
-			meta = &PortalMetadata{}
-			portal.Metadata = meta
-		}
-		meta.ConversationID = convs[i].ID
-		meta.SourceID = convs[i].SourceID
-		meta.GroupName = convs[i].Name
-		meta.ConversationType = convs[i].ConversationType
-		if err := portal.Save(ctx); err != nil {
-			return nil, fmt.Errorf("cache TikTok portal metadata: %w", err)
+		if tc.updatePortalMetadata(portal, &convs[i]) {
+			if err := portal.Save(ctx); err != nil {
+				return nil, fmt.Errorf("cache TikTok portal metadata: %w", err)
+			}
 		}
 
 		return &convs[i], nil
