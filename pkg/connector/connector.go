@@ -137,6 +137,8 @@ type PortalMetadata struct {
 	// ConversationType is the wire conversation_type value: 1 for DMs, 2 for group chats.
 	// Used to set message_kind correctly when sending outbound messages.
 	ConversationType uint64 `json:"conversation_type,omitempty"`
+	// Muted caches the per-user TikTok mute state derived from get_by_user_init field 51 metadata.
+	Muted *bool `json:"muted,omitempty"`
 }
 
 // MessageMetadata stores TikTok-specific data alongside each bridged message.

@@ -8,6 +8,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/event"
 )
 
 const (
@@ -62,11 +63,15 @@ func TestBuildGroupChatInfo_PersistsPortalMetadata(t *testing.T) {
 		SourceID:         9000000000000000001,
 		Name:             "testing chat",
 		ConversationType: 2,
+		Muted:            boolPtr(true),
 	}
 
 	info := tc.buildGroupChatInfo(conv)
 	if info == nil || info.Name == nil || *info.Name != "testing chat" {
 		t.Fatalf("info = %+v, want named group chat info", info)
+	}
+	if info.UserLocal == nil || info.UserLocal.MutedUntil == nil || *info.UserLocal.MutedUntil != event.MutedForever {
+		t.Fatalf("info.UserLocal = %+v, want muted forever", info.UserLocal)
 	}
 
 	portal := &bridgev2.Portal{
@@ -88,6 +93,9 @@ func TestBuildGroupChatInfo_PersistsPortalMetadata(t *testing.T) {
 	if meta.ConversationID != conv.ID || meta.SourceID != conv.SourceID || meta.ConversationType != conv.ConversationType || meta.GroupName != conv.Name {
 		t.Fatalf("portal metadata = %+v", meta)
 	}
+	if meta.Muted == nil || !*meta.Muted {
+		t.Fatalf("portal metadata muted = %v, want true", meta.Muted)
+	}
 }
 
 func TestUpdatePortalMetadata_DMSetsRoomTypeAndOtherUser(t *testing.T) {
@@ -108,6 +116,7 @@ func TestUpdatePortalMetadata_DMSetsRoomTypeAndOtherUser(t *testing.T) {
 		SourceID:         syntheticConvSourceID,
 		Participants:     []string{syntheticOtherUserID, syntheticSelfUserID},
 		ConversationType: 1,
+		Muted:            boolPtr(true),
 	}
 
 	changed := tc.updatePortalMetadata(portal, conv)
@@ -120,6 +129,9 @@ func TestUpdatePortalMetadata_DMSetsRoomTypeAndOtherUser(t *testing.T) {
 	}
 	if meta.ConversationID != conv.ID || meta.SourceID != conv.SourceID || meta.ConversationType != conv.ConversationType {
 		t.Fatalf("portal metadata = %+v", meta)
+	}
+	if meta.Muted == nil || !*meta.Muted {
+		t.Fatalf("portal metadata muted = %v, want true", meta.Muted)
 	}
 	if portal.RoomType != database.RoomTypeDM {
 		t.Fatalf("portal.RoomType = %q, want dm", portal.RoomType)
@@ -146,6 +158,7 @@ func TestGetChatInfo_DMUsesPersistedMetadata(t *testing.T) {
 				ConversationID:   syntheticDMConvID,
 				SourceID:         syntheticConvSourceID,
 				ConversationType: 1,
+				Muted:            boolPtr(true),
 			},
 		},
 	}
@@ -166,10 +179,17 @@ func TestGetChatInfo_DMUsesPersistedMetadata(t *testing.T) {
 	if len(info.Members.Members) != 2 {
 		t.Fatalf("len(info.Members.Members) = %d, want 2", len(info.Members.Members))
 	}
+	if info.UserLocal == nil || info.UserLocal.MutedUntil == nil || *info.UserLocal.MutedUntil != event.MutedForever {
+		t.Fatalf("info.UserLocal = %+v, want muted forever", info.UserLocal)
+	}
 	if !info.Members.Members[0].IsFromMe {
 		t.Fatalf("first member = %+v, want self member", info.Members.Members[0])
 	}
 	if info.Members.Members[1].Sender != networkid.UserID(syntheticOtherUserID) {
 		t.Fatalf("second member sender = %q", info.Members.Members[1].Sender)
 	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

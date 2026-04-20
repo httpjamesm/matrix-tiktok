@@ -110,6 +110,24 @@ func parseReactionsProto(entries []*tiktokpb.ReactionSummary) []Reaction {
 	return deduplicateReactions(out)
 }
 
+func metadataKVValue(metadata []*tiktokpb.MetadataKV, key string) string {
+	for _, pair := range metadata {
+		if pair.GetKey() == key {
+			return pair.GetValue()
+		}
+	}
+	return ""
+}
+
+func extractConversationMuted(attrs []*tiktokpb.MetadataKV) *bool {
+	raw := strings.TrimSpace(metadataKVValue(attrs, "a:conv_set_notification"))
+	if raw == "" {
+		return nil
+	}
+	muted := raw == "2"
+	return &muted
+}
+
 func hasRealMessageProto(entry *tiktokpb.InboxConversationEntry) bool {
 	raw := entry.GetLastMessagePreview()
 	if len(raw) > 0 && !strings.EqualFold(strings.TrimSpace(string(raw)), "placeholder") {
@@ -188,5 +206,6 @@ func parseConversationDetailProto(detail *tiktokpb.InboxConversationDetail) (Con
 		Participants:     participants,
 		Name:             name,
 		ConversationType: conversationType,
+		Muted:            extractConversationMuted(detail.GetState().GetAttributes()),
 	}, nil
 }

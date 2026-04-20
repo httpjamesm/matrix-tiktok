@@ -56,13 +56,58 @@ func newTikTokClient(connector *TikTokConnector, userLogin *bridgev2.UserLogin, 
 	}
 }
 
+func userLocalPortalInfoFromMuted(muted *bool) *bridgev2.UserLocalPortalInfo {
+	if muted == nil {
+		return nil
+	}
+	mutedUntil := bridgev2.Unmuted
+	if *muted {
+		mutedUntil = event.MutedForever
+	}
+	return &bridgev2.UserLocalPortalInfo{
+		MutedUntil: &mutedUntil,
+	}
+}
+
+func (tc *TikTokClient) applyPortalMuteState(ctx context.Context, portal *bridgev2.Portal, muted *bool) {
+	if portal == nil || portal.MXID == "" || muted == nil || tc.userLogin == nil || tc.userLogin.User == nil {
+		return
+	}
+	dp := tc.userLogin.User.DoublePuppet(ctx)
+	if dp == nil {
+		zerolog.Ctx(ctx).Debug().
+			Str("portal_id", string(portal.ID)).
+			Msg("Skipping TikTok mute sync: no double puppet available")
+		return
+	}
+
+	mutedUntil := bridgev2.Unmuted
+	if *muted {
+		mutedUntil = event.MutedForever
+	}
+	if err := dp.MuteRoom(ctx, portal.MXID, mutedUntil); err != nil {
+		zerolog.Ctx(ctx).Err(err).
+			Str("portal_id", string(portal.ID)).
+			Bool("muted", *muted).
+			Msg("Failed to sync TikTok mute state to Matrix")
+	}
+}
+
+func equalBoolPtr(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 func (tc *TikTokClient) buildGroupChatInfo(conv *libtiktok.Conversation) *bridgev2.ChatInfo {
 	if conv == nil || conv.ConversationType != 2 || conv.Name == "" {
 		return nil
 	}
 	name := conv.Name
 	return &bridgev2.ChatInfo{
-		Name: &name,
+		Name:      &name,
+		UserLocal: userLocalPortalInfoFromMuted(conv.Muted),
 		ExtraUpdates: func(ctx context.Context, portal *bridgev2.Portal) bool {
 			meta, _ := portal.Metadata.(*PortalMetadata)
 			if meta == nil {
@@ -84,6 +129,10 @@ func (tc *TikTokClient) buildGroupChatInfo(conv *libtiktok.Conversation) *bridge
 			}
 			if meta.GroupName != conv.Name {
 				meta.GroupName = conv.Name
+				changed = true
+			}
+			if conv.Muted != nil && !equalBoolPtr(meta.Muted, conv.Muted) {
+				meta.Muted = conv.Muted
 				changed = true
 			}
 			return changed
@@ -684,6 +733,9 @@ func (tc *TikTokClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal
 			Members: members,
 		},
 	}
+	if meta != nil {
+		info.UserLocal = userLocalPortalInfoFromMuted(meta.Muted)
+	}
 	if isDM {
 		roomType := database.RoomTypeDM
 		info.Type = &roomType
@@ -734,6 +786,10 @@ func (tc *TikTokClient) updatePortalMetadata(portal *bridgev2.Portal, conv *libt
 		meta.ConversationType = conv.ConversationType
 		changed = true
 	}
+	if conv.Muted != nil && !equalBoolPtr(meta.Muted, conv.Muted) {
+		meta.Muted = conv.Muted
+		changed = true
+	}
 	otherUserID := ""
 	for _, pid := range conv.Participants {
 		if pid != "" && pid != tc.meta.UserID {
@@ -768,12 +824,12 @@ func (tc *TikTokClient) syncPortalMetadata(ctx context.Context, conv *libtiktok.
 	if err != nil {
 		return fmt.Errorf("get portal for metadata sync: %w", err)
 	}
-	if !tc.updatePortalMetadata(portal, conv) {
-		return nil
+	if tc.updatePortalMetadata(portal, conv) {
+		if err := portal.Save(ctx); err != nil {
+			return fmt.Errorf("save portal metadata: %w", err)
+		}
 	}
-	if err := portal.Save(ctx); err != nil {
-		return fmt.Errorf("save portal metadata: %w", err)
-	}
+	tc.applyPortalMuteState(ctx, portal, conv.Muted)
 	return nil
 }
 
@@ -1210,6 +1266,7 @@ func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *br
 				SourceID:         meta.SourceID,
 				Name:             meta.GroupName,
 				ConversationType: meta.ConversationType,
+				Muted:            meta.Muted,
 			}, nil
 		}
 	}

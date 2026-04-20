@@ -111,6 +111,27 @@ func TestParseConversationDetailProto_GroupConversation(t *testing.T) {
 	}
 }
 
+func TestParseConversationDetailProto_MutedConversationState(t *testing.T) {
+	detail := &tiktokpb.InboxConversationDetail{
+		ConversationId:   protoString(syntheticGroupConversationID),
+		SourceId:         protoUint64(2000000000000000001),
+		ConversationType: protoUint64(2),
+		State: &tiktokpb.InboxConversationState{
+			Attributes: []*tiktokpb.MetadataKV{
+				{Key: protoString("a:conv_set_notification"), Value: protoString("2")},
+			},
+		},
+	}
+
+	conv, err := parseConversationDetailProto(detail)
+	if err != nil {
+		t.Fatalf("parseConversationDetailProto returned error: %v", err)
+	}
+	if conv.Muted == nil || !*conv.Muted {
+		t.Fatalf("conv.Muted = %v, want true", conv.Muted)
+	}
+}
+
 func TestParseInboxResponse_GroupSummaryEntry(t *testing.T) {
 	body := mustMarshalProto(&tiktokpb.InboxResponse{
 		MessageType: protoUint64(203),
@@ -283,6 +304,7 @@ func TestMergeInboxConversations(t *testing.T) {
 				ID:           "group-1",
 				SourceID:     1,
 				Participants: []string{"111", "222"},
+				Muted:        boolPtr(false),
 			},
 		},
 		[]Conversation{
@@ -291,6 +313,7 @@ func TestMergeInboxConversations(t *testing.T) {
 				SourceID:     1,
 				Participants: []string{"222", "333"},
 				Name:         "testing chat",
+				Muted:        boolPtr(true),
 			},
 			{
 				ID:           "dm-1",
@@ -308,6 +331,9 @@ func TestMergeInboxConversations(t *testing.T) {
 	}
 	if merged[0].Name != "testing chat" {
 		t.Fatalf("merged[0].Name = %q, want testing chat", merged[0].Name)
+	}
+	if merged[0].Muted == nil || !*merged[0].Muted {
+		t.Fatalf("merged[0].Muted = %v, want true", merged[0].Muted)
 	}
 	if merged[1].ID != "dm-1" {
 		t.Fatalf("merged[1].ID = %q", merged[1].ID)
@@ -405,6 +431,10 @@ func metadataValue(metadata []*tiktokpb.MetadataKV, key string) string {
 		}
 	}
 	return ""
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func indexOf(items []string, want string) int {

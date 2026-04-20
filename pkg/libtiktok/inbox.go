@@ -25,6 +25,9 @@ type Conversation struct {
 	Name string
 	// ConversationType is the wire conversation_type value: 1 for DMs, 2 for group chats.
 	ConversationType uint64
+	// Muted is the per-user notification state from detail.state.attributes["a:conv_set_notification"].
+	// A nil value means the inbox bootstrap did not include a known mute state.
+	Muted *bool
 }
 
 type Message struct {
@@ -308,6 +311,9 @@ func mergeInboxConversations(existing, incoming []Conversation) []Conversation {
 			}
 			if conv.ConversationType != 0 {
 				existing[idx].ConversationType = conv.ConversationType
+			}
+			if conv.Muted != nil {
+				existing[idx].Muted = conv.Muted
 			}
 			if len(conv.Participants) > 0 {
 				seenParticipants := make(map[string]struct{}, len(existing[idx].Participants))
