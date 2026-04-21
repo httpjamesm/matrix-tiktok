@@ -86,6 +86,7 @@ func (tc *TikTokClient) sendGetSelfBridgeState(err error) {
 
 // Disconnect stops the WebSocket loop.
 func (tc *TikTokClient) Disconnect() {
+	tc.stopAllTypingTimers()
 	if tc.stopLoop != nil {
 		tc.stopLoop()
 		tc.stopLoop = nil
@@ -181,8 +182,17 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 					Str("reader_user_id", rr.ReaderUserID).
 					Msg("WS event: read receipt")
 				tc.dispatchWSReadReceipt(rr)
+			case evt.Typing != nil:
+				ti := evt.Typing
+				log.Debug().
+					Str("conversation_id", ti.ConversationID).
+					Uint64("conversation_source_id", ti.ConversationSourceID).
+					Str("sender_user_id", ti.SenderUserID).
+					Uint64("create_time_ms", ti.CreateTimeMs).
+					Msg("WS event: typing heartbeat")
+				tc.dispatchWSTyping(ti)
 			default:
-				log.Warn().Msg("WS event: received event with nil Message, Reaction, Deletion, and ReadReceipt")
+				log.Warn().Msg("WS event: received event with nil Message, Reaction, Deletion, ReadReceipt, and Typing")
 			}
 		}
 

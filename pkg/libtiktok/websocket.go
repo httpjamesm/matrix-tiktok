@@ -20,12 +20,14 @@ import (
 )
 
 // WSEvent is the unit of communication between libtiktok and the connector
-// layer. At most one of Message, Reaction, Deletion, or ReadReceipt is non-nil.
+// layer. At most one of Message, Reaction, Deletion, ReadReceipt, or Typing is
+// non-nil.
 type WSEvent struct {
 	Message     *WSMessage
 	Reaction    *WSReactionEvent
 	Deletion    *WSMessageDeletion
 	ReadReceipt *WSReadReceipt
+	Typing      *WSTypingIndicator
 }
 
 // WSReadReceipt is an inner_type 501 command (commands.read_receipt).
@@ -37,6 +39,14 @@ type WSReadReceipt struct {
 	// ReaderUserID is set from peer_or_inbox_id when non-zero (see im.proto).
 	ReaderUserID string
 	Reserved2    uint32
+}
+
+// WSTypingIndicator is an inner_type 510 typing heartbeat.
+type WSTypingIndicator struct {
+	ConversationID       string
+	ConversationSourceID uint64
+	SenderUserID         string
+	CreateTimeMs         uint64
 }
 
 // WSMessage carries a single inbound chat event.
@@ -222,6 +232,9 @@ func (c *Client) parseWSFrame(ctx context.Context, data []byte) (*WSEvent, error
 	case 501:
 		log.Debug().Uint64("inner_type", innerType).Msg("Dispatching websocket frame to read-receipt parser")
 		return parseReadReceiptEvent(ctx, &env)
+	case 510:
+		log.Debug().Uint64("inner_type", innerType).Msg("Dispatching websocket frame to typing parser")
+		return parseTypingIndicatorEvent(ctx, &env)
 	case 705:
 		log.Debug().Uint64("inner_type", innerType).Msg("Dispatching websocket frame to property-update parser")
 		return c.parsePropertyUpdateEvent(ctx, &env)
@@ -271,6 +284,40 @@ func parseReadReceiptEvent(ctx context.Context, env *tiktokpb.WebsocketEnvelope)
 		Uint64("read_timestamp_us", out.ReadTimestampUs).
 		Msg("WS 501: read receipt")
 	return &WSEvent{ReadReceipt: out}, nil
+}
+
+// parseTypingIndicatorEvent handles inner_type 510 (typing heartbeat command).
+func parseTypingIndicatorEvent(ctx context.Context, env *tiktokpb.WebsocketEnvelope) (*WSEvent, error) {
+	log := zerolog.Ctx(ctx)
+	ti := env.GetCommands().GetTypingIndicator()
+	if ti == nil {
+		log.Warn().Msg("WS 510: typing_indicator command missing - dropping frame")
+		return nil, nil
+	}
+
+	convID := ti.GetConversationId()
+	senderID := ti.GetSenderUserId()
+	if convID == "" || senderID == 0 {
+		log.Warn().
+			Str("conversation_id", convID).
+			Uint64("sender_user_id", senderID).
+			Msg("WS 510: typing indicator missing conversation_id or sender_user_id - dropping frame")
+		return nil, nil
+	}
+
+	out := &WSTypingIndicator{
+		ConversationID:       convID,
+		ConversationSourceID: ti.GetConversationSourceId(),
+		SenderUserID:         strconv.FormatUint(senderID, 10),
+		CreateTimeMs:         ti.GetCreateTimeMs(),
+	}
+	log.Debug().
+		Str("conversation_id", out.ConversationID).
+		Uint64("conversation_source_id", out.ConversationSourceID).
+		Str("sender_user_id", out.SenderUserID).
+		Uint64("create_time_ms", out.CreateTimeMs).
+		Msg("WS 510: typing indicator")
+	return &WSEvent{Typing: out}, nil
 }
 
 // wsContentCommandJSON is a non-chat command envelope in

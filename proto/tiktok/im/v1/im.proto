@@ -895,6 +895,7 @@ message WebsocketCommands {
   optional WebsocketChat chat = 500;
   // inner_type 501: which message was read, in which conversation.
   optional WebsocketReadReceipt read_receipt = 501;
+  optional WebsocketTypingIndicator typing_indicator = 510;
   optional WebsocketPropertyUpdate property_update = 705;
 }
 
@@ -910,6 +911,24 @@ message WebsocketReadReceipt {
   optional uint64 peer_or_inbox_id = 5;
   // Server message id that was read (read-up-to / target).
   optional uint64 read_server_message_id = 6;
+}
+
+// Typing heartbeat carried by inner_type 510.
+//
+// Current captures suggest TikTok sends this periodically while the remote user
+// is actively typing. The bridge interprets the absence of follow-up heartbeats
+// as "stopped typing" in connector logic rather than on the wire layer.
+message WebsocketTypingIndicator {
+  // Numeric TikTok user ID of the typing sender.
+  optional uint64 sender_user_id = 1;
+  optional string conversation_id = 2;
+  // Conversation source ID reused by history/reaction APIs.
+  optional uint64 conversation_source_id = 3;
+  optional uint64 reserved_4 = 4;
+  optional uint64 reserved_5 = 5;
+  optional uint64 reserved_6 = 6;
+  // Observed scale consistent with Unix milliseconds.
+  optional uint64 create_time_ms = 10;
 }
 
 // WebSocket chat event container.

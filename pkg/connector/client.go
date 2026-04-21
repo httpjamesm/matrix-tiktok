@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/singleflight"
@@ -15,6 +16,18 @@ import (
 // tiktokMatrixMediaMaxBytes is advertised in com.beeper.room_features for media uploads
 // and is a soft cap for clients; TikTok may still reject oversized payloads.
 const tiktokMatrixMediaMaxBytes = 50 * 1024 * 1024
+
+const typingHeartbeatTimeout = 5 * time.Second
+
+type typingStateKey struct {
+	ConversationID string
+	SenderUserID   string
+}
+
+type typingTimerState struct {
+	seq   uint64
+	timer *time.Timer
+}
 
 // TikTokClient implements bridgev2.NetworkAPI for a single logged-in TikTok session.
 type TikTokClient struct {
@@ -36,6 +49,10 @@ type TikTokClient struct {
 	lastSeen   map[string]int64  // convID → highest dispatched message timestamp (ms)
 	otherUsers map[string]string // convID → other participant's TikTok user ID
 	groupNames map[string]string // convID → explicit TikTok group title
+	typing     map[typingStateKey]*typingTimerState
+
+	typingTimeout           time.Duration
+	queueRemoteEventForTest func(bridgev2.RemoteEvent)
 }
 
 // newTikTokClient is the canonical constructor used by both LoadUserLogin and
@@ -49,6 +66,9 @@ func newTikTokClient(connector *TikTokConnector, userLogin *bridgev2.UserLogin, 
 		lastSeen:   make(map[string]int64),
 		otherUsers: make(map[string]string),
 		groupNames: make(map[string]string),
+		typing:     make(map[typingStateKey]*typingTimerState),
+
+		typingTimeout: typingHeartbeatTimeout,
 	}
 }
 

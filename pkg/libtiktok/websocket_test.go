@@ -226,3 +226,68 @@ func TestParseReadReceiptEventReaderEmptyWhenPeerZero(t *testing.T) {
 		t.Fatalf("ReaderUserID: got %q want empty", evt.ReadReceipt.ReaderUserID)
 	}
 }
+
+func TestParseTypingIndicatorEvent(t *testing.T) {
+	const (
+		convID   = "0:1:1000000000000000001:2000000000000000002"
+		senderID = uint64(1000000000000000001)
+		sourceID = uint64(9007199254740997)
+		createMs = uint64(1640000000123)
+	)
+	innerType := uint64(510)
+	env := &tiktokpb.WebsocketEnvelope{
+		InnerType: &innerType,
+		Commands: &tiktokpb.WebsocketCommands{
+			TypingIndicator: &tiktokpb.WebsocketTypingIndicator{
+				SenderUserId:         protoUint64(senderID),
+				ConversationId:       protoString(convID),
+				ConversationSourceId: protoUint64(sourceID),
+				Reserved_4:           protoUint64(1),
+				Reserved_5:           protoUint64(3),
+				Reserved_6:           protoUint64(0),
+				CreateTimeMs:         protoUint64(createMs),
+			},
+		},
+	}
+
+	evt, err := parseTypingIndicatorEvent(context.Background(), env)
+	if err != nil {
+		t.Fatalf("parseTypingIndicatorEvent: %v", err)
+	}
+	if evt == nil || evt.Typing == nil {
+		t.Fatalf("expected typing event, got %#v", evt)
+	}
+	ti := evt.Typing
+	if ti.ConversationID != convID {
+		t.Fatalf("ConversationID: got %q want %q", ti.ConversationID, convID)
+	}
+	if ti.SenderUserID != "1000000000000000001" {
+		t.Fatalf("SenderUserID: got %q", ti.SenderUserID)
+	}
+	if ti.ConversationSourceID != sourceID {
+		t.Fatalf("ConversationSourceID: got %d want %d", ti.ConversationSourceID, sourceID)
+	}
+	if ti.CreateTimeMs != createMs {
+		t.Fatalf("CreateTimeMs: got %d want %d", ti.CreateTimeMs, createMs)
+	}
+}
+
+func TestParseTypingIndicatorEventNilWhenMissingRequiredFields(t *testing.T) {
+	innerType := uint64(510)
+	env := &tiktokpb.WebsocketEnvelope{
+		InnerType: &innerType,
+		Commands: &tiktokpb.WebsocketCommands{
+			TypingIndicator: &tiktokpb.WebsocketTypingIndicator{
+				CreateTimeMs: protoUint64(1640000000123),
+			},
+		},
+	}
+
+	evt, err := parseTypingIndicatorEvent(context.Background(), env)
+	if err != nil {
+		t.Fatalf("parseTypingIndicatorEvent: %v", err)
+	}
+	if evt != nil {
+		t.Fatalf("expected nil event, got %#v", evt)
+	}
+}

@@ -12,6 +12,14 @@ import (
 	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 )
 
+func (tc *TikTokClient) queueRemoteEvent(evt bridgev2.RemoteEvent) {
+	if tc.queueRemoteEventForTest != nil {
+		tc.queueRemoteEventForTest(evt)
+		return
+	}
+	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, evt)
+}
+
 // dispatchMessage queues a single TikTok message into the bridgev2 pipeline,
 // followed immediately by a ReactionSync event when the message carries reactions.
 func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtiktok.Message) {
@@ -20,7 +28,7 @@ func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtik
 		Str("conversation_id", conv.ID).
 		Uint64("message_id", msg.ServerID).
 		Logger()
-	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Message[libtiktok.Message]{
+	tc.queueRemoteEvent(&simplevent.Message[libtiktok.Message]{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventMessage,
 			LogContext: func(c zerolog.Context) zerolog.Context {
@@ -93,7 +101,7 @@ func (tc *TikTokClient) dispatchReactions(conv *libtiktok.Conversation, msg libt
 		}
 	}
 
-	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.ReactionSync{
+	tc.queueRemoteEvent(&simplevent.ReactionSync{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventReactionSync,
 			LogContext: func(c zerolog.Context) zerolog.Context {
@@ -152,7 +160,7 @@ func (tc *TikTokClient) dispatchWSReaction(evt *libtiktok.WSReactionEvent) {
 			Str("event_type", evtType.String()).
 			Msg("Queuing remote reaction event")
 
-		tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Reaction{
+		tc.queueRemoteEvent(&simplevent.Reaction{
 			EventMeta: simplevent.EventMeta{
 				Type: evtType,
 				LogContext: func(c zerolog.Context) zerolog.Context {
@@ -204,7 +212,7 @@ func (tc *TikTokClient) dispatchWSMessageDeletion(d *libtiktok.WSMessageDeletion
 	if d.TimestampMs == 0 {
 		ts = time.Now()
 	}
-	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.MessageRemove{
+	tc.queueRemoteEvent(&simplevent.MessageRemove{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventMessageRemove,
 			LogContext: func(c zerolog.Context) zerolog.Context {
@@ -254,7 +262,7 @@ func (tc *TikTokClient) dispatchWSReadReceipt(rr *libtiktok.WSReadReceipt) {
 	}
 	readerUID := rr.ReaderUserID
 
-	tc.userLogin.Bridge.QueueRemoteEvent(tc.userLogin, &simplevent.Receipt{
+	tc.queueRemoteEvent(&simplevent.Receipt{
 		EventMeta: simplevent.EventMeta{
 			Type: bridgev2.RemoteEventReadReceipt,
 			LogContext: func(c zerolog.Context) zerolog.Context {
@@ -278,4 +286,113 @@ func (tc *TikTokClient) dispatchWSReadReceipt(rr *libtiktok.WSReadReceipt) {
 		ReadUpTo:   readUpTo,
 	})
 	log.Debug().Str("reader_id", readerUID).Msg("Queued remote read receipt")
+}
+
+// dispatchWSTyping bridges a TikTok typing heartbeat to Matrix and keeps a
+// per-conversation+sender inactivity timer that emits an explicit stop event.
+func (tc *TikTokClient) dispatchWSTyping(ti *libtiktok.WSTypingIndicator) {
+	log := tc.userLogin.Log.With().
+		Str("component", "connector-dispatch").
+		Str("conversation_id", ti.ConversationID).
+		Uint64("conversation_source_id", ti.ConversationSourceID).
+		Str("sender_user_id", ti.SenderUserID).
+		Logger()
+	if ti.SenderUserID == "" {
+		log.Debug().Msg("Skipping typing heartbeat: missing sender user id")
+		return
+	}
+	if ti.SenderUserID == tc.meta.UserID {
+		log.Debug().Msg("Skipping typing heartbeat from self")
+		return
+	}
+
+	timeout := tc.typingTimeout
+	if timeout <= 0 {
+		timeout = typingHeartbeatTimeout
+	}
+	tc.queueTypingEvent(ti, timeout)
+
+	key := typingStateKey{
+		ConversationID: ti.ConversationID,
+		SenderUserID:   ti.SenderUserID,
+	}
+	tc.mu.Lock()
+	state := tc.typing[key]
+	if state == nil {
+		state = &typingTimerState{}
+		tc.typing[key] = state
+	} else if state.timer != nil {
+		state.timer.Stop()
+	}
+	state.seq++
+	seq := state.seq
+	state.timer = time.AfterFunc(timeout, func() {
+		tc.handleTypingTimeout(key, seq, ti)
+	})
+	tc.mu.Unlock()
+
+	log.Debug().
+		Dur("timeout", timeout).
+		Uint64("sequence", seq).
+		Msg("Queued remote typing event and refreshed inactivity timer")
+}
+
+func (tc *TikTokClient) handleTypingTimeout(key typingStateKey, seq uint64, ti *libtiktok.WSTypingIndicator) {
+	tc.mu.Lock()
+	state := tc.typing[key]
+	if state == nil || state.seq != seq {
+		tc.mu.Unlock()
+		return
+	}
+	delete(tc.typing, key)
+	tc.mu.Unlock()
+
+	stopEvt := &libtiktok.WSTypingIndicator{
+		ConversationID:       ti.ConversationID,
+		ConversationSourceID: ti.ConversationSourceID,
+		SenderUserID:         ti.SenderUserID,
+	}
+	tc.queueTypingEvent(stopEvt, 0)
+}
+
+func (tc *TikTokClient) stopAllTypingTimers() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	for key, state := range tc.typing {
+		if state != nil && state.timer != nil {
+			state.timer.Stop()
+		}
+		delete(tc.typing, key)
+	}
+}
+
+func (tc *TikTokClient) queueTypingEvent(ti *libtiktok.WSTypingIndicator, timeout time.Duration) {
+	ts := time.Now()
+	if ti.CreateTimeMs > 0 {
+		ts = time.UnixMilli(int64(ti.CreateTimeMs))
+	}
+	tc.queueRemoteEvent(&simplevent.Typing{
+		EventMeta: simplevent.EventMeta{
+			Type: bridgev2.RemoteEventTyping,
+			LogContext: func(c zerolog.Context) zerolog.Context {
+				return c.
+					Str("conversation_id", ti.ConversationID).
+					Uint64("conversation_source_id", ti.ConversationSourceID).
+					Str("sender_user_id", ti.SenderUserID).
+					Dur("timeout", timeout)
+			},
+			PortalKey: networkid.PortalKey{
+				ID:       makePortalID(ti.ConversationID),
+				Receiver: tc.userLogin.ID,
+			},
+			CreatePortal: false,
+			Sender: bridgev2.EventSender{
+				IsFromMe: ti.SenderUserID == tc.meta.UserID,
+				Sender:   makeUserID(ti.SenderUserID),
+			},
+			Timestamp: ts,
+		},
+		Timeout: timeout,
+		Type:    bridgev2.TypingTypeText,
+	})
 }

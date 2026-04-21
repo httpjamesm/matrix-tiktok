@@ -5995,10 +5995,11 @@ type WebsocketCommands struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Chat  *WebsocketChat         `protobuf:"bytes,500,opt,name=chat" json:"chat,omitempty"`
 	// inner_type 501: which message was read, in which conversation.
-	ReadReceipt    *WebsocketReadReceipt    `protobuf:"bytes,501,opt,name=read_receipt,json=readReceipt" json:"read_receipt,omitempty"`
-	PropertyUpdate *WebsocketPropertyUpdate `protobuf:"bytes,705,opt,name=property_update,json=propertyUpdate" json:"property_update,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	ReadReceipt     *WebsocketReadReceipt     `protobuf:"bytes,501,opt,name=read_receipt,json=readReceipt" json:"read_receipt,omitempty"`
+	TypingIndicator *WebsocketTypingIndicator `protobuf:"bytes,510,opt,name=typing_indicator,json=typingIndicator" json:"typing_indicator,omitempty"`
+	PropertyUpdate  *WebsocketPropertyUpdate  `protobuf:"bytes,705,opt,name=property_update,json=propertyUpdate" json:"property_update,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *WebsocketCommands) Reset() {
@@ -6041,6 +6042,13 @@ func (x *WebsocketCommands) GetChat() *WebsocketChat {
 func (x *WebsocketCommands) GetReadReceipt() *WebsocketReadReceipt {
 	if x != nil {
 		return x.ReadReceipt
+	}
+	return nil
+}
+
+func (x *WebsocketCommands) GetTypingIndicator() *WebsocketTypingIndicator {
+	if x != nil {
+		return x.TypingIndicator
 	}
 	return nil
 }
@@ -6134,6 +6142,106 @@ func (x *WebsocketReadReceipt) GetReadServerMessageId() uint64 {
 	return 0
 }
 
+// Typing heartbeat carried by inner_type 510.
+//
+// Current captures suggest TikTok sends this periodically while the remote user
+// is actively typing. The bridge interprets the absence of follow-up heartbeats
+// as "stopped typing" in connector logic rather than on the wire layer.
+type WebsocketTypingIndicator struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Numeric TikTok user ID of the typing sender.
+	SenderUserId   *uint64 `protobuf:"varint,1,opt,name=sender_user_id,json=senderUserId" json:"sender_user_id,omitempty"`
+	ConversationId *string `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId" json:"conversation_id,omitempty"`
+	// Conversation source ID reused by history/reaction APIs.
+	ConversationSourceId *uint64 `protobuf:"varint,3,opt,name=conversation_source_id,json=conversationSourceId" json:"conversation_source_id,omitempty"`
+	Reserved_4           *uint64 `protobuf:"varint,4,opt,name=reserved_4,json=reserved4" json:"reserved_4,omitempty"`
+	Reserved_5           *uint64 `protobuf:"varint,5,opt,name=reserved_5,json=reserved5" json:"reserved_5,omitempty"`
+	Reserved_6           *uint64 `protobuf:"varint,6,opt,name=reserved_6,json=reserved6" json:"reserved_6,omitempty"`
+	// Observed scale consistent with Unix milliseconds.
+	CreateTimeMs  *uint64 `protobuf:"varint,10,opt,name=create_time_ms,json=createTimeMs" json:"create_time_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WebsocketTypingIndicator) Reset() {
+	*x = WebsocketTypingIndicator{}
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[81]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WebsocketTypingIndicator) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WebsocketTypingIndicator) ProtoMessage() {}
+
+func (x *WebsocketTypingIndicator) ProtoReflect() protoreflect.Message {
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[81]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WebsocketTypingIndicator.ProtoReflect.Descriptor instead.
+func (*WebsocketTypingIndicator) Descriptor() ([]byte, []int) {
+	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{81}
+}
+
+func (x *WebsocketTypingIndicator) GetSenderUserId() uint64 {
+	if x != nil && x.SenderUserId != nil {
+		return *x.SenderUserId
+	}
+	return 0
+}
+
+func (x *WebsocketTypingIndicator) GetConversationId() string {
+	if x != nil && x.ConversationId != nil {
+		return *x.ConversationId
+	}
+	return ""
+}
+
+func (x *WebsocketTypingIndicator) GetConversationSourceId() uint64 {
+	if x != nil && x.ConversationSourceId != nil {
+		return *x.ConversationSourceId
+	}
+	return 0
+}
+
+func (x *WebsocketTypingIndicator) GetReserved_4() uint64 {
+	if x != nil && x.Reserved_4 != nil {
+		return *x.Reserved_4
+	}
+	return 0
+}
+
+func (x *WebsocketTypingIndicator) GetReserved_5() uint64 {
+	if x != nil && x.Reserved_5 != nil {
+		return *x.Reserved_5
+	}
+	return 0
+}
+
+func (x *WebsocketTypingIndicator) GetReserved_6() uint64 {
+	if x != nil && x.Reserved_6 != nil {
+		return *x.Reserved_6
+	}
+	return 0
+}
+
+func (x *WebsocketTypingIndicator) GetCreateTimeMs() uint64 {
+	if x != nil && x.CreateTimeMs != nil {
+		return *x.CreateTimeMs
+	}
+	return 0
+}
+
 // WebSocket chat event container.
 type WebsocketChat struct {
 	state          protoimpl.MessageState  `protogen:"open.v1"`
@@ -6145,7 +6253,7 @@ type WebsocketChat struct {
 
 func (x *WebsocketChat) Reset() {
 	*x = WebsocketChat{}
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[81]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6157,7 +6265,7 @@ func (x *WebsocketChat) String() string {
 func (*WebsocketChat) ProtoMessage() {}
 
 func (x *WebsocketChat) ProtoReflect() protoreflect.Message {
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[81]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6170,7 +6278,7 @@ func (x *WebsocketChat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketChat.ProtoReflect.Descriptor instead.
 func (*WebsocketChat) Descriptor() ([]byte, []int) {
-	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{81}
+	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *WebsocketChat) GetConversationId() string {
@@ -6222,7 +6330,7 @@ type WebsocketMessageDetail struct {
 
 func (x *WebsocketMessageDetail) Reset() {
 	*x = WebsocketMessageDetail{}
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[82]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6234,7 +6342,7 @@ func (x *WebsocketMessageDetail) String() string {
 func (*WebsocketMessageDetail) ProtoMessage() {}
 
 func (x *WebsocketMessageDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[82]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6247,7 +6355,7 @@ func (x *WebsocketMessageDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketMessageDetail.ProtoReflect.Descriptor instead.
 func (*WebsocketMessageDetail) Descriptor() ([]byte, []int) {
-	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{82}
+	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *WebsocketMessageDetail) GetServerMessageId() uint64 {
@@ -6353,7 +6461,7 @@ type WebsocketPropertyUpdate struct {
 
 func (x *WebsocketPropertyUpdate) Reset() {
 	*x = WebsocketPropertyUpdate{}
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[83]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6365,7 +6473,7 @@ func (x *WebsocketPropertyUpdate) String() string {
 func (*WebsocketPropertyUpdate) ProtoMessage() {}
 
 func (x *WebsocketPropertyUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_tiktok_im_v1_im_proto_msgTypes[83]
+	mi := &file_tiktok_im_v1_im_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6378,7 +6486,7 @@ func (x *WebsocketPropertyUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WebsocketPropertyUpdate.ProtoReflect.Descriptor instead.
 func (*WebsocketPropertyUpdate) Descriptor() ([]byte, []int) {
-	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{83}
+	return file_tiktok_im_v1_im_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *WebsocketPropertyUpdate) GetConversationId() string {
@@ -6980,10 +7088,11 @@ const file_tiktok_im_v1_im_proto_rawDesc = "" +
 	"\x11WebsocketEnvelope\x12\x1d\n" +
 	"\n" +
 	"inner_type\x18\x01 \x01(\x04R\tinnerType\x12;\n" +
-	"\bcommands\x18\x06 \x01(\v2\x1f.tiktok.im.v1.WebsocketCommandsR\bcommands\"\xde\x01\n" +
+	"\bcommands\x18\x06 \x01(\v2\x1f.tiktok.im.v1.WebsocketCommandsR\bcommands\"\xb2\x02\n" +
 	"\x11WebsocketCommands\x120\n" +
 	"\x04chat\x18\xf4\x03 \x01(\v2\x1b.tiktok.im.v1.WebsocketChatR\x04chat\x12F\n" +
-	"\fread_receipt\x18\xf5\x03 \x01(\v2\".tiktok.im.v1.WebsocketReadReceiptR\vreadReceipt\x12O\n" +
+	"\fread_receipt\x18\xf5\x03 \x01(\v2\".tiktok.im.v1.WebsocketReadReceiptR\vreadReceipt\x12R\n" +
+	"\x10typing_indicator\x18\xfe\x03 \x01(\v2&.tiktok.im.v1.WebsocketTypingIndicatorR\x0ftypingIndicator\x12O\n" +
 	"\x0fproperty_update\x18\xc1\x05 \x01(\v2%.tiktok.im.v1.WebsocketPropertyUpdateR\x0epropertyUpdate\"\xe8\x01\n" +
 	"\x14WebsocketReadReceipt\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x1d\n" +
@@ -6991,7 +7100,19 @@ const file_tiktok_im_v1_im_proto_rawDesc = "" +
 	"reserved_2\x18\x02 \x01(\rR\treserved2\x12*\n" +
 	"\x11read_timestamp_us\x18\x03 \x01(\x04R\x0freadTimestampUs\x12'\n" +
 	"\x10peer_or_inbox_id\x18\x05 \x01(\x04R\rpeerOrInboxId\x123\n" +
-	"\x16read_server_message_id\x18\x06 \x01(\x04R\x13readServerMessageId\"v\n" +
+	"\x16read_server_message_id\x18\x06 \x01(\x04R\x13readServerMessageId\"\xa2\x02\n" +
+	"\x18WebsocketTypingIndicator\x12$\n" +
+	"\x0esender_user_id\x18\x01 \x01(\x04R\fsenderUserId\x12'\n" +
+	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x124\n" +
+	"\x16conversation_source_id\x18\x03 \x01(\x04R\x14conversationSourceId\x12\x1d\n" +
+	"\n" +
+	"reserved_4\x18\x04 \x01(\x04R\treserved4\x12\x1d\n" +
+	"\n" +
+	"reserved_5\x18\x05 \x01(\x04R\treserved5\x12\x1d\n" +
+	"\n" +
+	"reserved_6\x18\x06 \x01(\x04R\treserved6\x12$\n" +
+	"\x0ecreate_time_ms\x18\n" +
+	" \x01(\x04R\fcreateTimeMs\"v\n" +
 	"\rWebsocketChat\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12<\n" +
 	"\x06detail\x18\x05 \x01(\v2$.tiktok.im.v1.WebsocketMessageDetailR\x06detail\"\xd1\x04\n" +
@@ -7033,7 +7154,7 @@ func file_tiktok_im_v1_im_proto_rawDescGZIP() []byte {
 	return file_tiktok_im_v1_im_proto_rawDescData
 }
 
-var file_tiktok_im_v1_im_proto_msgTypes = make([]protoimpl.MessageInfo, 84)
+var file_tiktok_im_v1_im_proto_msgTypes = make([]protoimpl.MessageInfo, 85)
 var file_tiktok_im_v1_im_proto_goTypes = []any{
 	(*EmptyMessage)(nil),                       // 0: tiktok.im.v1.EmptyMessage
 	(*MetadataKV)(nil),                         // 1: tiktok.im.v1.MetadataKV
@@ -7116,9 +7237,10 @@ var file_tiktok_im_v1_im_proto_goTypes = []any{
 	(*WebsocketEnvelope)(nil),                  // 78: tiktok.im.v1.WebsocketEnvelope
 	(*WebsocketCommands)(nil),                  // 79: tiktok.im.v1.WebsocketCommands
 	(*WebsocketReadReceipt)(nil),               // 80: tiktok.im.v1.WebsocketReadReceipt
-	(*WebsocketChat)(nil),                      // 81: tiktok.im.v1.WebsocketChat
-	(*WebsocketMessageDetail)(nil),             // 82: tiktok.im.v1.WebsocketMessageDetail
-	(*WebsocketPropertyUpdate)(nil),            // 83: tiktok.im.v1.WebsocketPropertyUpdate
+	(*WebsocketTypingIndicator)(nil),           // 81: tiktok.im.v1.WebsocketTypingIndicator
+	(*WebsocketChat)(nil),                      // 82: tiktok.im.v1.WebsocketChat
+	(*WebsocketMessageDetail)(nil),             // 83: tiktok.im.v1.WebsocketMessageDetail
+	(*WebsocketPropertyUpdate)(nil),            // 84: tiktok.im.v1.WebsocketPropertyUpdate
 }
 var file_tiktok_im_v1_im_proto_depIdxs = []int32{
 	0,   // 0: tiktok.im.v1.MediaUploadConfigRequest.options:type_name -> tiktok.im.v1.EmptyMessage
@@ -7212,20 +7334,21 @@ var file_tiktok_im_v1_im_proto_depIdxs = []int32{
 	76,  // 88: tiktok.im.v1.WebsocketOuterFrame.reserved_14:type_name -> tiktok.im.v1.WebsocketMeta
 	78,  // 89: tiktok.im.v1.WebsocketFrame.envelope:type_name -> tiktok.im.v1.WebsocketEnvelope
 	79,  // 90: tiktok.im.v1.WebsocketEnvelope.commands:type_name -> tiktok.im.v1.WebsocketCommands
-	81,  // 91: tiktok.im.v1.WebsocketCommands.chat:type_name -> tiktok.im.v1.WebsocketChat
+	82,  // 91: tiktok.im.v1.WebsocketCommands.chat:type_name -> tiktok.im.v1.WebsocketChat
 	80,  // 92: tiktok.im.v1.WebsocketCommands.read_receipt:type_name -> tiktok.im.v1.WebsocketReadReceipt
-	83,  // 93: tiktok.im.v1.WebsocketCommands.property_update:type_name -> tiktok.im.v1.WebsocketPropertyUpdate
-	82,  // 94: tiktok.im.v1.WebsocketChat.detail:type_name -> tiktok.im.v1.WebsocketMessageDetail
-	8,   // 95: tiktok.im.v1.WebsocketMessageDetail.tags:type_name -> tiktok.im.v1.MetadataTag
-	27,  // 96: tiktok.im.v1.WebsocketMessageDetail.message_reply:type_name -> tiktok.im.v1.MessageReplyReference
-	33,  // 97: tiktok.im.v1.WebsocketMessageDetail.attachment:type_name -> tiktok.im.v1.MessageAttachmentPayload
-	35,  // 98: tiktok.im.v1.WebsocketMessageDetail.private_image:type_name -> tiktok.im.v1.PrivateImageAttachment
-	8,   // 99: tiktok.im.v1.WebsocketPropertyUpdate.tags:type_name -> tiktok.im.v1.MetadataTag
-	100, // [100:100] is the sub-list for method output_type
-	100, // [100:100] is the sub-list for method input_type
-	100, // [100:100] is the sub-list for extension type_name
-	100, // [100:100] is the sub-list for extension extendee
-	0,   // [0:100] is the sub-list for field type_name
+	81,  // 93: tiktok.im.v1.WebsocketCommands.typing_indicator:type_name -> tiktok.im.v1.WebsocketTypingIndicator
+	84,  // 94: tiktok.im.v1.WebsocketCommands.property_update:type_name -> tiktok.im.v1.WebsocketPropertyUpdate
+	83,  // 95: tiktok.im.v1.WebsocketChat.detail:type_name -> tiktok.im.v1.WebsocketMessageDetail
+	8,   // 96: tiktok.im.v1.WebsocketMessageDetail.tags:type_name -> tiktok.im.v1.MetadataTag
+	27,  // 97: tiktok.im.v1.WebsocketMessageDetail.message_reply:type_name -> tiktok.im.v1.MessageReplyReference
+	33,  // 98: tiktok.im.v1.WebsocketMessageDetail.attachment:type_name -> tiktok.im.v1.MessageAttachmentPayload
+	35,  // 99: tiktok.im.v1.WebsocketMessageDetail.private_image:type_name -> tiktok.im.v1.PrivateImageAttachment
+	8,   // 100: tiktok.im.v1.WebsocketPropertyUpdate.tags:type_name -> tiktok.im.v1.MetadataTag
+	101, // [101:101] is the sub-list for method output_type
+	101, // [101:101] is the sub-list for method input_type
+	101, // [101:101] is the sub-list for extension type_name
+	101, // [101:101] is the sub-list for extension extendee
+	0,   // [0:101] is the sub-list for field type_name
 }
 
 func init() { file_tiktok_im_v1_im_proto_init() }
@@ -7239,7 +7362,7 @@ func file_tiktok_im_v1_im_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tiktok_im_v1_im_proto_rawDesc), len(file_tiktok_im_v1_im_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   84,
+			NumMessages:   85,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
