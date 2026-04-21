@@ -667,6 +667,48 @@ message SendResponseBody {
   optional string message_id = 1;
 }
 
+// Common REST request envelope for the type-411 typing / input-status call.
+//
+// POST /v1/client/input_status. Current captures use:
+// - message_type 411
+// - sub_command 10100
+// - client_version "1.6.3"
+// - field 7 as a second empty embedded message in addition to field 4
+// - field 8 -> 411 for the endpoint-specific typing body
+message InputStatusRequest {
+  optional uint64 message_type = 1;
+  optional uint64 sub_command = 2;
+  optional string client_version = 3;
+  optional EmptyMessage options = 4;
+  optional uint64 platform_flag = 5;
+  optional uint64 reserved_6 = 6;
+  optional EmptyMessage reserved_7 = 7;
+  optional InputStatusRequestPayload payload = 8;
+  optional string device_id = 9;
+  optional string client_platform = 11;
+  repeated MetadataKV metadata = 15;
+  optional uint64 final_flag = 18;
+}
+
+// Typed payload wrapper for the type-411 request envelope.
+message InputStatusRequestPayload {
+  optional InputStatusBody input_status = 411;
+}
+
+// Inner typing heartbeat body for POST /v1/client/input_status.
+//
+// Observed capture:
+// - field 1: conversation ID
+// - field 2: 1 while the user is actively typing
+// - field 3: conversation source ID reused by other IM APIs
+// - field 4: observed constant 3 in current web traffic
+message InputStatusBody {
+  optional string conversation_id = 1;
+  optional uint64 typing_status = 2;
+  optional uint64 source_id = 3;
+  optional uint64 reserved_4 = 4;
+}
+
 // Common REST request envelope for the type-701 message-delete call.
 //
 // POST /v1/message/delete — observed without URL query parameters (unlike send

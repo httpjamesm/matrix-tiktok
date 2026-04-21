@@ -87,6 +87,7 @@ func (tc *TikTokClient) sendGetSelfBridgeState(err error) {
 // Disconnect stops the WebSocket loop.
 func (tc *TikTokClient) Disconnect() {
 	tc.stopAllTypingTimers()
+	tc.stopAllOutgoingTypingLoops()
 	if tc.stopLoop != nil {
 		tc.stopLoop()
 		tc.stopLoop = nil

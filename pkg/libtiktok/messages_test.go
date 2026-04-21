@@ -245,3 +245,101 @@ func TestParseSendResponseVarintMessageID(t *testing.T) {
 		t.Fatalf("message ID = %q", id)
 	}
 }
+
+func TestBuildInputStatusPayload(t *testing.T) {
+	fakeConvID := "0:1:7000000000000000001:7000000000000000002"
+	fakeSourceID := uint64(7000000000000000003)
+	fakeDeviceID := "fake-device-id-1234567890abcdef"
+
+	payload, err := buildInputStatusPayload(
+		SendTypingParams{
+			ConvID:       fakeConvID,
+			ConvSourceID: fakeSourceID,
+		},
+		fakeDeviceID,
+		"ms-token",
+		"verify-fp",
+	)
+	if err != nil {
+		t.Fatalf("buildInputStatusPayload: %v", err)
+	}
+
+	var req tiktokpb.InputStatusRequest
+	if err := unmarshalProto(payload, &req); err != nil {
+		t.Fatalf("unmarshal input_status payload: %v", err)
+	}
+
+	if req.GetMessageType() != 411 {
+		t.Fatalf("message_type = %d", req.GetMessageType())
+	}
+	if req.GetSubCommand() != 10100 {
+		t.Fatalf("sub_command = %d", req.GetSubCommand())
+	}
+	if req.GetClientVersion() != "1.6.3" {
+		t.Fatalf("client_version = %q", req.GetClientVersion())
+	}
+	if req.GetPlatformFlag() != 3 {
+		t.Fatalf("platform_flag = %d", req.GetPlatformFlag())
+	}
+	if req.GetReserved_6() != 0 {
+		t.Fatalf("reserved_6 = %d", req.GetReserved_6())
+	}
+	if req.GetReserved_7() == nil {
+		t.Fatal("reserved_7 should be present")
+	}
+	if req.GetDeviceId() != fakeDeviceID {
+		t.Fatalf("device_id = %q", req.GetDeviceId())
+	}
+	if req.GetClientPlatform() != "web" {
+		t.Fatalf("client_platform = %q", req.GetClientPlatform())
+	}
+	if req.GetFinalFlag() != 1 {
+		t.Fatalf("final_flag = %d", req.GetFinalFlag())
+	}
+
+	body := req.GetPayload().GetInputStatus()
+	if body.GetConversationId() != fakeConvID {
+		t.Fatalf("conversation_id = %q", body.GetConversationId())
+	}
+	if body.GetTypingStatus() != 1 {
+		t.Fatalf("typing_status = %d", body.GetTypingStatus())
+	}
+	if body.GetSourceId() != fakeSourceID {
+		t.Fatalf("source_id = %d", body.GetSourceId())
+	}
+	if body.GetReserved_4() != 3 {
+		t.Fatalf("reserved_4 = %d", body.GetReserved_4())
+	}
+
+	keys := make([]string, 0, len(req.GetMetadata()))
+	values := make(map[string]string, len(req.GetMetadata()))
+	for _, entry := range req.GetMetadata() {
+		keys = append(keys, entry.GetKey())
+		values[entry.GetKey()] = entry.GetValue()
+	}
+	if len(keys) < 4 {
+		t.Fatalf("metadata len = %d", len(keys))
+	}
+	if keys[0] != "aid" || keys[1] != "app_name" || keys[2] != "channel" || keys[3] != "device_platform" {
+		t.Fatalf("metadata prefix = %v", keys[:4])
+	}
+	if got := values["referer"]; got != "https://www.tiktok.com/messages?lang=en" {
+		t.Fatalf("referer = %q", got)
+	}
+	if got := values["screen_width"]; got != "1512" {
+		t.Fatalf("screen_width = %q", got)
+	}
+	if got := values["screen_height"]; got != "982" {
+		t.Fatalf("screen_height = %q", got)
+	}
+	if got := values["verifyFp"]; got != "verify-fp" {
+		t.Fatalf("verifyFp = %q", got)
+	}
+	if got := values["Web-Sdk-Ms-Token"]; got != "ms-token" {
+		t.Fatalf("Web-Sdk-Ms-Token = %q", got)
+	}
+	last := keys[len(keys)-3:]
+	if last[0] != "verifyFp" || last[1] != "Web-Sdk-Ms-Token" || last[2] != "browser_version" {
+		t.Fatalf("metadata suffix = %v", last)
+	}
+}

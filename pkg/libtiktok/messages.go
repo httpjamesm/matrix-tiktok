@@ -25,6 +25,9 @@ const (
 	setPropertyPath    = "/v1/message/set_property"
 	setPropertyFullURL = "https://im-api-sg.tiktok.com/v1/message/set_property"
 
+	inputStatusPath    = "/v1/client/input_status"
+	inputStatusFullURL = "https://im-api-sg.tiktok.com/v1/client/input_status"
+
 	deleteMsgPath = "/v1/message/delete"
 	recallMsgPath = "/v1/message/recall"
 )
@@ -77,6 +80,12 @@ func BuildReplyReferenceJSON(parentContentJSON, refmsgUID, refmsgSecUID string) 
 // SendMessageResponse holds the result of a successful SendMessage call.
 type SendMessageResponse struct {
 	MessageID string
+}
+
+// SendTypingParams holds the parameters for POST /v1/client/input_status.
+type SendTypingParams struct {
+	ConvID       string
+	ConvSourceID uint64
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +214,51 @@ func buildSendMetadata(deviceID, msToken, verifyFP, publicKeyB64 string) []metaK
 		metaKV{"tt-ticket-guard-web-version", "1"},
 		last, // browser_version goes last
 	)
+	return pairs
+}
+
+// buildInputStatusMetadata returns the metadata key-value pairs for the typing
+// heartbeat endpoint. This order mirrors the observed web capture more closely
+// than the shared inbox/send helper.
+func buildInputStatusMetadata(deviceID, msToken, verifyFP string) []metaKV {
+	pairs := []metaKV{
+		{"aid", imAID},
+		{"app_name", "tiktok_web"},
+		{"channel", "web"},
+		{"device_platform", "web_pc"},
+		{"device_id", deviceID},
+		{"region", "CA"},
+		{"priority_region", "CA"},
+		{"os", "mac"},
+		{"referer", "https://www.tiktok.com/messages?lang=en"},
+		{"root_referer", ""},
+		{"cookie_enabled", "true"},
+		{"screen_width", "1512"},
+		{"screen_height", "982"},
+		{"browser_language", "en-US"},
+		{"browser_platform", "MacIntel"},
+		{"browser_name", "Mozilla"},
+		{"browser_online", "true"},
+		{"app_language", "en"},
+		{"webcast_language", "en"},
+		{"tz_name", "America/Toronto"},
+		{"is_page_visible", "true"},
+		{"focus_state", "true"},
+		{"is_fullscreen", "false"},
+		{"history_len", "2"},
+		{"user_is_login", "true"},
+		{"data_collection_enabled", "true"},
+		{"from_appID", imAID},
+		{"locale", "en"},
+		{"user_agent", DefaultUserAgent},
+	}
+	if verifyFP != "" {
+		pairs = append(pairs, metaKV{"verifyFp", verifyFP})
+	}
+	if msToken != "" {
+		pairs = append(pairs, metaKV{"Web-Sdk-Ms-Token", msToken})
+	}
+	pairs = append(pairs, metaKV{"browser_version", DefaultUserAgent})
 	return pairs
 }
 
@@ -378,6 +432,34 @@ func buildSendPayload(convID string, convSourceID uint64, text, deviceID, msToke
 		FinalFlag:      protoUint64(1),
 		Payload: &tiktokpb.SendRequestPayload{
 			Send: sendBody,
+		},
+	}
+
+	return marshalProto(msg)
+}
+
+// buildInputStatusPayload constructs the protobuf request body for
+// POST /v1/client/input_status.
+func buildInputStatusPayload(p SendTypingParams, deviceID, msToken, verifyFP string) ([]byte, error) {
+	msg := &tiktokpb.InputStatusRequest{
+		MessageType:    protoUint64(411),
+		SubCommand:     protoUint64(10100),
+		ClientVersion:  protoString("1.6.3"),
+		Options:        emptyProtoMessage(),
+		PlatformFlag:   protoUint64(3),
+		Reserved_6:     protoUint64(0),
+		Reserved_7:     emptyProtoMessage(),
+		DeviceId:       protoString(deviceID),
+		ClientPlatform: protoString("web"),
+		Metadata:       metadataKVsToProto(buildInputStatusMetadata(deviceID, msToken, verifyFP)),
+		FinalFlag:      protoUint64(1),
+		Payload: &tiktokpb.InputStatusRequestPayload{
+			InputStatus: &tiktokpb.InputStatusBody{
+				ConversationId: protoString(p.ConvID),
+				TypingStatus:   protoUint64(1),
+				SourceId:       protoUint64(p.ConvSourceID),
+				Reserved_4:     protoUint64(3),
+			},
 		},
 	}
 
@@ -762,6 +844,59 @@ func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
 	}
 	if resp.IsError() {
 		return fmt.Errorf("set_property API returned %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	return nil
+}
+
+// SendTyping posts a typing heartbeat to TikTok for the specified conversation.
+func (c *Client) SendTyping(ctx context.Context, p SendTypingParams) error {
+	cookie := c.rIA.Header.Get("Cookie")
+
+	universalData, err := c.getMessagesUniversalData()
+	if err != nil {
+		return fmt.Errorf("get universal data: %w", err)
+	}
+	appContext, err := universalData.getAppContext()
+	if err != nil {
+		return fmt.Errorf("get appContext: %w", err)
+	}
+	deviceID, ok := appContext["wid"].(string)
+	if !ok {
+		return fmt.Errorf("wid not found in appContext")
+	}
+
+	msToken := extractCookie(cookie, "msToken")
+	verifyFP := extractCookie(cookie, "s_v_web_id")
+
+	payload, err := buildInputStatusPayload(p, deviceID, msToken, verifyFP)
+	if err != nil {
+		return fmt.Errorf("build input_status payload: %w", err)
+	}
+
+	resp, err := c.rIA.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/x-protobuf").
+		SetHeader("Content-Type", "application/x-protobuf").
+		SetHeader("Cache-Control", "no-cache").
+		SetHeader("Origin", "https://www.tiktok.com").
+		SetHeader("Pragma", "no-cache").
+		SetHeader("Priority", "u=1, i").
+		SetQueryParams(map[string]string{
+			"aid":             imAID,
+			"version_code":    "1.0.0",
+			"app_name":        "tiktok_web",
+			"device_platform": "web_pc",
+			"msToken":         msToken,
+			"X-Bogus":         randomBogus(),
+		}).
+		SetBody(payload).
+		Post(inputStatusPath)
+	if err != nil {
+		return fmt.Errorf("POST input_status: %w", err)
+	}
+	if resp.IsError() {
+		return fmt.Errorf("input_status API returned %d: %s", resp.StatusCode(), resp.String())
 	}
 
 	return nil

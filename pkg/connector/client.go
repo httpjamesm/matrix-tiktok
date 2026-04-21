@@ -18,6 +18,7 @@ import (
 const tiktokMatrixMediaMaxBytes = 50 * 1024 * 1024
 
 const typingHeartbeatTimeout = 5 * time.Second
+const outboundTypingHeartbeatInterval = 4500 * time.Millisecond
 
 type typingStateKey struct {
 	ConversationID string
@@ -27,6 +28,10 @@ type typingStateKey struct {
 type typingTimerState struct {
 	seq   uint64
 	timer *time.Timer
+}
+
+type outboundTypingState struct {
+	cancel context.CancelFunc
 }
 
 // TikTokClient implements bridgev2.NetworkAPI for a single logged-in TikTok session.
@@ -45,30 +50,35 @@ type TikTokClient struct {
 	connectFlight singleflight.Group
 
 	// In-memory state — reset on restart, but the bridge deduplicates by message ID.
-	mu         sync.Mutex
-	lastSeen   map[string]int64  // convID → highest dispatched message timestamp (ms)
-	otherUsers map[string]string // convID → other participant's TikTok user ID
-	groupNames map[string]string // convID → explicit TikTok group title
-	typing     map[typingStateKey]*typingTimerState
+	mu             sync.Mutex
+	lastSeen       map[string]int64  // convID → highest dispatched message timestamp (ms)
+	otherUsers     map[string]string // convID → other participant's TikTok user ID
+	groupNames     map[string]string // convID → explicit TikTok group title
+	typing         map[typingStateKey]*typingTimerState
+	outboundTyping map[string]*outboundTypingState
 
 	typingTimeout           time.Duration
+	outboundTypingInterval  time.Duration
 	queueRemoteEventForTest func(bridgev2.RemoteEvent)
+	sendTypingForTest       func(context.Context, libtiktok.SendTypingParams) error
 }
 
 // newTikTokClient is the canonical constructor used by both LoadUserLogin and
 // TikTokLogin.finishLogin.
 func newTikTokClient(connector *TikTokConnector, userLogin *bridgev2.UserLogin, meta *UserLoginMetadata) *TikTokClient {
 	return &TikTokClient{
-		connector:  connector,
-		userLogin:  userLogin,
-		meta:       meta,
-		apiClient:  libtiktok.NewClient(meta.Cookies),
-		lastSeen:   make(map[string]int64),
-		otherUsers: make(map[string]string),
-		groupNames: make(map[string]string),
-		typing:     make(map[typingStateKey]*typingTimerState),
+		connector:      connector,
+		userLogin:      userLogin,
+		meta:           meta,
+		apiClient:      libtiktok.NewClient(meta.Cookies),
+		lastSeen:       make(map[string]int64),
+		otherUsers:     make(map[string]string),
+		groupNames:     make(map[string]string),
+		typing:         make(map[typingStateKey]*typingTimerState),
+		outboundTyping: make(map[string]*outboundTypingState),
 
-		typingTimeout: typingHeartbeatTimeout,
+		typingTimeout:          typingHeartbeatTimeout,
+		outboundTypingInterval: outboundTypingHeartbeatInterval,
 	}
 }
 
@@ -121,5 +131,6 @@ var _ bridgev2.NetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.ReactionHandlingNetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.RedactionHandlingNetworkAPI = (*TikTokClient)(nil)
+var _ bridgev2.TypingHandlingNetworkAPI = (*TikTokClient)(nil)
 
 func ptrInt(v int) *int { return &v }
