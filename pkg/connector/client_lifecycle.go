@@ -2,27 +2,37 @@ package connector
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2/status"
 )
 
+const connectSingleflightKey = "tiktok-connect"
+
 // Connect validates the TikTok session, performs a one-time REST backfill to
 // catch up on recent messages, then starts the WebSocket loop for real-time
 // delivery. Errors are reported via BridgeState rather than returned
 // (mautrix-go March 2025 convention).
 func (tc *TikTokClient) Connect(ctx context.Context) {
+	_, _, _ = tc.connectFlight.Do(connectSingleflightKey, func() (any, error) {
+		tc.connectOnce(ctx)
+		return nil, nil
+	})
+}
+
+func (tc *TikTokClient) connectOnce(ctx context.Context) {
 	log := zerolog.Ctx(ctx).With().Str("component", "connector-lifecycle").Logger()
 	ctx = log.WithContext(ctx)
 
-	if _, err := tc.apiClient.GetSelf(ctx); err != nil {
-		tc.userLogin.BridgeState.Send(status.BridgeState{
-			StateEvent: status.StateBadCredentials,
-			Error:      "tiktok-auth-error",
-			Message:    "TikTok session is no longer valid — please log in again",
-			Info:       map[string]any{"go_error": err.Error()},
-		})
+	if tc.isConnected && tc.stopLoop != nil {
+		log.Debug().Msg("Skipping Connect: session already active")
+		return
+	}
+
+	if _, err := tc.apiClient.GetSelfWithRetry(ctx, 5); err != nil {
+		tc.sendGetSelfBridgeState(err)
 		return
 	}
 
@@ -51,6 +61,27 @@ func (tc *TikTokClient) Connect(ctx context.Context) {
 	loopCtx, cancel := context.WithCancel(context.Background())
 	tc.stopLoop = cancel
 	go tc.wsLoop(loopCtx)
+}
+
+// sendGetSelfBridgeState maps GetSelf failures to bridge state. Many failures are
+// flaky HTML/hydration responses from /messages (see GetSelfWithRetry) and are
+// not invalid cookies — those must not use BAD_CREDENTIALS.
+func (tc *TikTokClient) sendGetSelfBridgeState(err error) {
+	msg := err.Error()
+	st := status.BridgeState{
+		Error: "tiktok-session-error",
+		Info:  map[string]any{"go_error": msg},
+	}
+	switch {
+	case strings.Contains(msg, "unexpected status 401"),
+		strings.Contains(msg, "unexpected status 403"):
+		st.StateEvent = status.StateBadCredentials
+		st.Message = "TikTok session is no longer valid — please log in again"
+	default:
+		st.StateEvent = status.StateUnknownError
+		st.Message = "TikTok session check failed (temporary or unclear error) — try again or restart the bridge"
+	}
+	tc.userLogin.BridgeState.Send(st)
 }
 
 // Disconnect stops the WebSocket loop.

@@ -7,9 +7,11 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/google/uuid v1.6.0
+	github.com/pierrec/lz4/v4 v4.1.26
 	github.com/rs/zerolog v1.35.0
 	go.mau.fi/util v0.9.8-0.20260406161447-0300c476893a
 	golang.org/x/net v0.53.0
+	golang.org/x/sync v0.20.0
 	google.golang.org/protobuf v1.36.11
 	maunium.net/go/mautrix v0.26.5-0.20260413182302-f3fab8d38470
 )
@@ -22,7 +24,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.37 // indirect
 	github.com/petermattis/goid v0.0.0-20260226131333-17d1149c6ac6 // indirect
-	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
@@ -33,7 +34,6 @@ require (
 	go.mau.fi/zeroconfig v0.2.0 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
-	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect

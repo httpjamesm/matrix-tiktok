@@ -15,6 +15,11 @@ import (
 	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 )
 
+// maxBackfillPagesPerConversation caps REST history pagination per chat. Each
+// page is at most 20 messages (TikTok API batch size). Without a limit, a
+// stuck cursor could loop forever.
+const maxBackfillPagesPerConversation = 10000
+
 func portalMeta(portal *bridgev2.Portal) (*PortalMetadata, bool) {
 	if portal == nil {
 		return nil, false
@@ -120,7 +125,7 @@ func (tc *TikTokClient) queueGroupNameUpdate(conv *libtiktok.Conversation) {
 	})
 }
 
-// fetchAndDispatch is called once on Connect to backfill recent messages via
+// fetchAndDispatch is called once on Connect to backfill message history via
 // the REST API before the WebSocket takes over. It walks each inbox
 // conversation and queues any unseen messages into the bridgev2 event pipeline,
 // also populating the otherUsers cache so GetChatInfo works immediately.
@@ -185,37 +190,77 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 		lastSeen := tc.lastSeen[conv.ID]
 		tc.mu.Unlock()
 
-		msgs, _, err := tc.apiClient.GetMessages(ctx, conv, "")
-		if err != nil {
-			log.Err(err).Str("conversation_id", conv.ID).Msg("Error fetching messages for conversation")
-			continue
+		// Paginate get_by_conversation until the cursor is exhausted. Each page is
+		// up to 20 messages, newest-first in fetch order; we dispatch oldest-first
+		// overall by walking pages from last (oldest batch) to first (newest batch).
+		var pages [][]libtiktok.Message
+		cursor := ""
+		truncated := false
+		for page := 0; ; page++ {
+			if page >= maxBackfillPagesPerConversation {
+				truncated = true
+				break
+			}
+			msgs, next, err := tc.apiClient.GetMessages(ctx, conv, cursor)
+			if err != nil {
+				log.Err(err).
+					Str("conversation_id", conv.ID).
+					Int("backfill_page", page).
+					Msg("Error fetching messages for conversation")
+				break
+			}
+			pages = append(pages, msgs)
+			if next == "" {
+				break
+			}
+			if next == cursor {
+				log.Warn().
+					Str("conversation_id", conv.ID).
+					Str("cursor", next).
+					Msg("TikTok history cursor did not advance; stopping backfill pagination")
+				break
+			}
+			cursor = next
+		}
+		if truncated {
+			log.Warn().
+				Str("conversation_id", conv.ID).
+				Int("max_pages", maxBackfillPagesPerConversation).
+				Msg("Backfill pagination stopped at safety limit (history may be truncated)")
 		}
 
+		totalMsgs := 0
+		for i := range pages {
+			totalMsgs += len(pages[i])
+		}
 		log.Debug().
 			Str("conversation_id", conv.ID).
-			Int("messages", len(msgs)).
+			Int("messages", totalMsgs).
+			Int("pages", len(pages)).
 			Int64("last_seen_ms", lastSeen).
 			Msg("Fetched messages for conversation")
 
 		var dispatched int
-		for _, msg := range msgs {
-			msgLog := log.Debug().
-				Str("conversation_id", conv.ID).
-				Uint64("message_id", msg.ServerID).
-				Str("sender_id", msg.SenderID).
-				Str("type", msg.Type).
-				Int64("ts_ms", msg.TimestampMs).
-				Int64("last_seen_ms", lastSeen)
+		for pi := len(pages) - 1; pi >= 0; pi-- {
+			for _, msg := range pages[pi] {
+				msgLog := log.Debug().
+					Str("conversation_id", conv.ID).
+					Uint64("message_id", msg.ServerID).
+					Str("sender_id", msg.SenderID).
+					Str("type", msg.Type).
+					Int64("ts_ms", msg.TimestampMs).
+					Int64("last_seen_ms", lastSeen)
 
-			if msg.TimestampMs <= lastSeen {
-				msgLog.Bool("skipped", true).Msg("Skipping already-seen message during backfill")
-				continue
-			}
-			msgLog.Bool("skipped", false).Msg("Dispatching backfill message")
-			tc.dispatchMessage(conv, msg)
-			dispatched++
-			if msg.TimestampMs > lastSeen {
-				lastSeen = msg.TimestampMs
+				if msg.TimestampMs <= lastSeen {
+					msgLog.Bool("skipped", true).Msg("Skipping already-seen message during backfill")
+					continue
+				}
+				msgLog.Bool("skipped", false).Msg("Dispatching backfill message")
+				tc.dispatchMessage(conv, msg)
+				dispatched++
+				if msg.TimestampMs > lastSeen {
+					lastSeen = msg.TimestampMs
+				}
 			}
 		}
 

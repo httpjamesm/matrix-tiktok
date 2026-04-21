@@ -73,7 +73,7 @@ func (tl *TikTokLogin) SubmitUserInput(ctx context.Context, input map[string]str
 func (tl *TikTokLogin) finishLogin(ctx context.Context) (*bridgev2.LoginStep, error) {
 	apiClient := libtiktok.NewClient(tl.cookies)
 
-	self, err := apiClient.GetSelf(ctx)
+	self, err := apiClient.GetSelfWithRetry(ctx, 5)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate TikTok session: %w", err)
 	}

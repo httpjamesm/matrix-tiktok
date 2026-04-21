@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 
@@ -24,6 +25,11 @@ type TikTokClient struct {
 
 	stopLoop    context.CancelFunc
 	isConnected bool
+
+	// Coalesces concurrent Connect calls (e.g. provisioning + startup) so two
+	// overlapping GetSelf sequences cannot leave BAD_CREDENTIALS while another
+	// run succeeds and starts backfill.
+	connectFlight singleflight.Group
 
 	// In-memory state — reset on restart, but the bridge deduplicates by message ID.
 	mu         sync.Mutex
