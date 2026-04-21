@@ -492,7 +492,7 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 	}
 
 	numericMsgID := detail.GetServerMessageId()
-	tsUs := int64(detail.GetTimestampUs())
+	tsUsSigned := int64(detail.GetTimestampUs())
 	senderID := strconv.FormatUint(detail.GetSenderUserId(), 10)
 	msgID := extractClientMsgIDFromTags(detail.GetTags())
 	wsContent := detail.GetContentJson()
@@ -563,7 +563,8 @@ func (c *Client) parseChatEvent(ctx context.Context, env *tiktokpb.WebsocketEnve
 		MediaWidth:      mediaWidth,
 		MediaHeight:     mediaHeight,
 		MediaDurationMs: mediaDurationMs,
-		TimestampMs:     tsUs / 1000,
+		TimestampMs:     tsUsSigned / 1000,
+		TimestampUs:     detail.GetTimestampUs(),
 		ReplyToServerID: replyTo,
 		ReplyQuotedText: replyQuoted,
 		SendChainID:     detail.GetSendChainId(),

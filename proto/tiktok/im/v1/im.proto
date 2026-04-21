@@ -709,6 +709,45 @@ message InputStatusBody {
   optional uint64 reserved_4 = 4;
 }
 
+// Common REST request envelope for POST /v3/conversation/mark_read.
+//
+// Current web captures use:
+// - message_type 604
+// - sub_command 1
+// - client_version "1.6.0"
+// - field 8 -> 604 for MarkConversationReadRequestBody
+message MarkConversationReadRequest {
+  optional uint64 message_type = 1;
+  optional uint64 sub_command = 2;
+  optional string client_version = 3;
+  optional EmptyMessage options = 4;
+  optional uint64 platform_flag = 5;
+  optional uint64 reserved_6 = 6;
+  optional string git_hash = 7;
+  optional MarkConversationReadRequestPayload payload = 8;
+  optional string device_id = 9;
+  optional string client_platform = 11;
+  repeated MetadataKV metadata = 15;
+  optional uint64 final_flag = 18;
+}
+
+// Typed payload wrapper for the type-604 mark_read envelope.
+message MarkConversationReadRequestPayload {
+  optional MarkConversationReadRequestBody mark_conversation_read = 604;
+}
+
+// Inner body for POST /v3/conversation/mark_read (field 8 → 604).
+message MarkConversationReadRequestBody {
+  optional string conversation_id = 1;
+  optional uint64 conversation_short_id = 2;
+  optional uint64 conversation_type = 3;
+  // Same meaning as ConversationMessageEntry.timestamp_us (field 4) on the last
+  // message to mark read through — microseconds since epoch.
+  optional uint64 read_message_index = 4;
+  optional uint64 conv_unread_count = 5;
+  optional uint64 total_unread_count = 6;
+}
+
 // Common REST request envelope for the type-701 message-delete call.
 //
 // POST /v1/message/delete — observed without URL query parameters (unlike send

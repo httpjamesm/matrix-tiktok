@@ -343,3 +343,78 @@ func TestBuildInputStatusPayload(t *testing.T) {
 		t.Fatalf("metadata suffix = %v", last)
 	}
 }
+
+func TestBuildMarkConversationReadPayload(t *testing.T) {
+	fakeConvID := "0:1:7000000000000000001:7000000000000000002"
+	fakeSourceID := uint64(7630978718240522503)
+	fakeDeviceID := "e3f69a57c34ecffc9e4e92466f43b6c7"
+	readIndex := uint64(1776744035049552)
+
+	payload, err := buildMarkConversationReadPayload(
+		MarkConversationReadParams{
+			ConvID:           fakeConvID,
+			ConvSourceID:     fakeSourceID,
+			ConversationType: 1,
+			ReadMessageIndex: readIndex,
+		},
+		fakeDeviceID,
+		"ms-token",
+		"verify-fp",
+	)
+	if err != nil {
+		t.Fatalf("buildMarkConversationReadPayload: %v", err)
+	}
+
+	var req tiktokpb.MarkConversationReadRequest
+	if err := unmarshalProto(payload, &req); err != nil {
+		t.Fatalf("unmarshal mark_read payload: %v", err)
+	}
+
+	if req.GetMessageType() != 604 {
+		t.Fatalf("message_type = %d", req.GetMessageType())
+	}
+	if req.GetSubCommand() != 1 {
+		t.Fatalf("sub_command = %d", req.GetSubCommand())
+	}
+	if req.GetClientVersion() != "1.6.0" {
+		t.Fatalf("client_version = %q", req.GetClientVersion())
+	}
+	if req.GetPlatformFlag() != 3 {
+		t.Fatalf("platform_flag = %d", req.GetPlatformFlag())
+	}
+	if req.GetReserved_6() != 0 {
+		t.Fatalf("reserved_6 = %d", req.GetReserved_6())
+	}
+	if req.GetGitHash() != "" {
+		t.Fatalf("git_hash = %q", req.GetGitHash())
+	}
+	if req.GetDeviceId() != fakeDeviceID {
+		t.Fatalf("device_id = %q", req.GetDeviceId())
+	}
+	if req.GetClientPlatform() != "web" {
+		t.Fatalf("client_platform = %q", req.GetClientPlatform())
+	}
+	if req.GetFinalFlag() != 1 {
+		t.Fatalf("final_flag = %d", req.GetFinalFlag())
+	}
+
+	body := req.GetPayload().GetMarkConversationRead()
+	if body.GetConversationId() != fakeConvID {
+		t.Fatalf("conversation_id = %q", body.GetConversationId())
+	}
+	if body.GetConversationShortId() != fakeSourceID {
+		t.Fatalf("conversation_short_id = %d", body.GetConversationShortId())
+	}
+	if body.GetConversationType() != 1 {
+		t.Fatalf("conversation_type = %d", body.GetConversationType())
+	}
+	if body.GetReadMessageIndex() != readIndex {
+		t.Fatalf("read_message_index = %d", body.GetReadMessageIndex())
+	}
+	if body.GetConvUnreadCount() != 0 {
+		t.Fatalf("conv_unread_count = %d", body.GetConvUnreadCount())
+	}
+	if body.GetTotalUnreadCount() != 0 {
+		t.Fatalf("total_unread_count = %d", body.GetTotalUnreadCount())
+	}
+}

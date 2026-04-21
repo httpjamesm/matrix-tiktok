@@ -13,6 +13,7 @@ A Matrix bridge for TikTok Messages. Intended for usage with Beeper.
   - [x] TikToks
 - [x] Reactions
 - [x] Typing Indicators
+- [x] Mark conversation as read
 - [x] Replies
 - [x] Group chats
 - [x] Delete message for everyone

@@ -48,7 +48,10 @@ type Message struct {
 	MediaHeight     int
 	MediaDurationMs int
 	TimestampMs     int64
-	Reactions       []Reaction
+	// TimestampUs is wire field 4 (timestamp_us) on ConversationMessageEntry; used
+	// for mark_read read_message_index (same scale as get_by_conversation rows).
+	TimestampUs uint64
+	Reactions   []Reaction
 	// ReplyToServerID is the parent message's server_message_id when this DM is a reply (aweType 703).
 	ReplyToServerID uint64
 	// ReplyQuotedText is a short plain-text preview of the parent message from message_reply (field 2 JSON), when present.
@@ -592,6 +595,7 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 		MediaHeight:     mediaHeight,
 		MediaDurationMs: mediaDurationMs,
 		TimestampMs:     int64(tsMicros) / 1000,
+		TimestampUs:     tsMicros,
 		Reactions:       parseReactionsProto(entry.GetReactions()),
 		ReplyToServerID: replyTo,
 		ReplyQuotedText: replyQuoted,
@@ -729,4 +733,29 @@ func (c *Client) GetMessages(ctx context.Context, conv *Conversation, cursor str
 		Str("next_cursor", nextCursor).
 		Msg("Fetched TikTok conversation history successfully")
 	return messages, nextCursor, nil
+}
+
+// LatestMessageTimestampUs returns ConversationMessageEntry.timestamp_us (wire
+// field 4) for the newest message in the thread. It uses get_by_conversation with
+// an empty cursor (latest batch); parseGetByConversationResponse orders messages
+// oldest-first, so the last row is the newest.
+//
+// TikTok's mark_read body uses read_message_index with this same field-4 value.
+func (c *Client) LatestMessageTimestampUs(ctx context.Context, conv *Conversation) (uint64, error) {
+	if conv == nil {
+		return 0, nil
+	}
+	msgs, _, err := c.GetMessages(ctx, conv, "")
+	if err != nil {
+		return 0, err
+	}
+	if len(msgs) == 0 {
+		return 0, nil
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].TimestampUs != 0 {
+			return msgs[i].TimestampUs, nil
+		}
+	}
+	return 0, nil
 }

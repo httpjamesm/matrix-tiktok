@@ -28,6 +28,8 @@ const (
 	inputStatusPath    = "/v1/client/input_status"
 	inputStatusFullURL = "https://im-api-sg.tiktok.com/v1/client/input_status"
 
+	markReadPath = "/v3/conversation/mark_read"
+
 	deleteMsgPath = "/v1/message/delete"
 	recallMsgPath = "/v1/message/recall"
 )
@@ -86,6 +88,17 @@ type SendMessageResponse struct {
 type SendTypingParams struct {
 	ConvID       string
 	ConvSourceID uint64
+}
+
+// MarkConversationReadParams holds the parameters for POST /v3/conversation/mark_read.
+type MarkConversationReadParams struct {
+	ConvID           string
+	ConvSourceID     uint64 // conversation_short_id on the wire
+	ConversationType uint64
+	// ReadMessageIndex is ConversationMessageEntry.timestamp_us (proto field 4).
+	ReadMessageIndex uint64
+	ConvUnreadCount  uint64
+	TotalUnreadCount uint64
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +472,36 @@ func buildInputStatusPayload(p SendTypingParams, deviceID, msToken, verifyFP str
 				TypingStatus:   protoUint64(1),
 				SourceId:       protoUint64(p.ConvSourceID),
 				Reserved_4:     protoUint64(3),
+			},
+		},
+	}
+
+	return marshalProto(msg)
+}
+
+// buildMarkConversationReadPayload constructs the protobuf request body for
+// POST /v3/conversation/mark_read.
+func buildMarkConversationReadPayload(p MarkConversationReadParams, deviceID, msToken, verifyFP string) ([]byte, error) {
+	msg := &tiktokpb.MarkConversationReadRequest{
+		MessageType:    protoUint64(604),
+		SubCommand:     protoUint64(1),
+		ClientVersion:  protoString("1.6.0"),
+		Options:        emptyProtoMessage(),
+		PlatformFlag:   protoUint64(3),
+		Reserved_6:     protoUint64(0),
+		GitHash:        protoString(""),
+		DeviceId:       protoString(deviceID),
+		ClientPlatform: protoString("web"),
+		Metadata:       metadataKVsToProto(buildInputStatusMetadata(deviceID, msToken, verifyFP)),
+		FinalFlag:      protoUint64(1),
+		Payload: &tiktokpb.MarkConversationReadRequestPayload{
+			MarkConversationRead: &tiktokpb.MarkConversationReadRequestBody{
+				ConversationId:       protoString(p.ConvID),
+				ConversationShortId:    protoUint64(p.ConvSourceID),
+				ConversationType:     protoUint64(p.ConversationType),
+				ReadMessageIndex:     protoUint64(p.ReadMessageIndex),
+				ConvUnreadCount:      protoUint64(p.ConvUnreadCount),
+				TotalUnreadCount:     protoUint64(p.TotalUnreadCount),
 			},
 		},
 	}
@@ -897,6 +940,59 @@ func (c *Client) SendTyping(ctx context.Context, p SendTypingParams) error {
 	}
 	if resp.IsError() {
 		return fmt.Errorf("input_status API returned %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	return nil
+}
+
+// MarkConversationRead marks a conversation as read on TikTok (POST /v3/conversation/mark_read).
+func (c *Client) MarkConversationRead(ctx context.Context, p MarkConversationReadParams) error {
+	cookie := c.rIA.Header.Get("Cookie")
+
+	universalData, err := c.getMessagesUniversalData()
+	if err != nil {
+		return fmt.Errorf("get universal data: %w", err)
+	}
+	appContext, err := universalData.getAppContext()
+	if err != nil {
+		return fmt.Errorf("get appContext: %w", err)
+	}
+	deviceID, ok := appContext["wid"].(string)
+	if !ok {
+		return fmt.Errorf("wid not found in appContext")
+	}
+
+	msToken := extractCookie(cookie, "msToken")
+	verifyFP := extractCookie(cookie, "s_v_web_id")
+
+	payload, err := buildMarkConversationReadPayload(p, deviceID, msToken, verifyFP)
+	if err != nil {
+		return fmt.Errorf("build mark_read payload: %w", err)
+	}
+
+	resp, err := c.rIA.R().
+		SetContext(ctx).
+		SetHeader("Accept", "application/x-protobuf").
+		SetHeader("Content-Type", "application/x-protobuf").
+		SetHeader("Cache-Control", "no-cache").
+		SetHeader("Origin", "https://www.tiktok.com").
+		SetHeader("Pragma", "no-cache").
+		SetHeader("Priority", "u=1, i").
+		SetQueryParams(map[string]string{
+			"aid":             imAID,
+			"version_code":    "1.0.0",
+			"app_name":        "tiktok_web",
+			"device_platform": "web_pc",
+			"msToken":         msToken,
+			"X-Bogus":         randomBogus(),
+		}).
+		SetBody(payload).
+		Post(markReadPath)
+	if err != nil {
+		return fmt.Errorf("POST mark_read: %w", err)
+	}
+	if resp.IsError() {
+		return fmt.Errorf("mark_read API returned %d: %s", resp.StatusCode(), resp.String())
 	}
 
 	return nil

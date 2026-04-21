@@ -132,5 +132,6 @@ var _ bridgev2.IdentifierResolvingNetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.ReactionHandlingNetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.RedactionHandlingNetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.TypingHandlingNetworkAPI = (*TikTokClient)(nil)
+var _ bridgev2.ReadReceiptHandlingNetworkAPI = (*TikTokClient)(nil)
 
 func ptrInt(v int) *int { return &v }
