@@ -1,16 +1,27 @@
 {
-  "name": "Go",
-  "image": "mcr.microsoft.com/devcontainers/go:1.25",
+  "name": "matrix-tiktok",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/matrix-tiktok",
+  "containerEnv": {
+    "DATABASE_URL": "postgres://bridge:tiktok@db:5432/matrix?sslmode=disable",
+    "PGHOST": "db",
+    "PGPORT": "5432",
+    "PGUSER": "bridge",
+    "PGPASSWORD": "tiktok",
+    "PGDATABASE": "matrix"
+  },
+  "forwardPorts": ["db:5432"],
   "customizations": {
     "vscode": {
       "extensions": ["golang.Go"],
       "settings": {
         "go.toolsManagement.autoUpdate": true,
         "go.useLanguageServer": true,
-        "go.lintTool": "staticcheck",
-      },
-    },
+        "go.lintTool": "staticcheck"
+      }
+    }
   },
-  "postCreateCommand": "go version",
-  "remoteUser": "vscode",
+  "postCreateCommand": "go version && bbctl --help >/dev/null",
+  "remoteUser": "vscode"
 }
