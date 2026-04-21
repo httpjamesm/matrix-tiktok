@@ -44,6 +44,11 @@ func (tc *TikTokClient) dispatchMessage(conv *libtiktok.Conversation, msg libtik
 		Data:               msg,
 		ConvertMessageFunc: tc.convertMessage,
 	})
+	tc.mu.Lock()
+	if msg.TimestampMs > tc.lastSeen[conv.ID] {
+		tc.lastSeen[conv.ID] = msg.TimestampMs
+	}
+	tc.mu.Unlock()
 	log.Debug().
 		Str("sender_id", msg.SenderID).
 		Str("message_type", msg.Type).

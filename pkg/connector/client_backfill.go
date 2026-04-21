@@ -15,10 +15,170 @@ import (
 	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 )
 
-// maxBackfillPagesPerConversation caps REST history pagination per chat. Each
-// page is at most 20 messages (TikTok API batch size). Without a limit, a
-// stuck cursor could loop forever.
-const maxBackfillPagesPerConversation = 10000
+const (
+	// hardMaxBackfillPagesPerConversation is a safety clamp for user-configured
+	// startup backfill limits so a stuck cursor cannot loop forever.
+	hardMaxBackfillPagesPerConversation = 10000
+	// defaultInitialBackfillMaxPages bounds cold-start history fetches and also
+	// caps incremental catch-up pagination on connect.
+	defaultInitialBackfillMaxPages = 5
+	// defaultInitialBackfillLookbackHours limits startup backfill for portals
+	// without a stored checkpoint.
+	defaultInitialBackfillLookbackHours = 72
+)
+
+type backfillCheckpoint struct {
+	TimestampMs int64
+	MessageID   uint64
+	CursorTsUs  uint64
+}
+
+func (tc *TikTokConnector) initialBackfillMaxPages() int {
+	pages := tc.Config.InitialBackfillMaxPages
+	switch {
+	case pages <= 0:
+		return defaultInitialBackfillMaxPages
+	case pages > hardMaxBackfillPagesPerConversation:
+		return hardMaxBackfillPagesPerConversation
+	default:
+		return pages
+	}
+}
+
+func (tc *TikTokConnector) initialBackfillMaxConversations() int {
+	if tc == nil || tc.Config.InitialBackfillMaxConversations <= 0 {
+		return 0
+	}
+	return tc.Config.InitialBackfillMaxConversations
+}
+
+func (tc *TikTokConnector) initialBackfillLookback() time.Duration {
+	hours := tc.Config.InitialBackfillLookbackHours
+	if hours <= 0 {
+		hours = defaultInitialBackfillLookbackHours
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+func maxCheckpoint(a, b backfillCheckpoint) backfillCheckpoint {
+	switch {
+	case a.TimestampMs > b.TimestampMs:
+		return a
+	case b.TimestampMs > a.TimestampMs:
+		return b
+	case a.TimestampMs == 0:
+		return a
+	case b.MessageID != 0:
+		return b
+	default:
+		return a
+	}
+}
+
+func checkpointFromPortal(portal *bridgev2.Portal) backfillCheckpoint {
+	meta, ok := portalMeta(portal)
+	if !ok {
+		return backfillCheckpoint{}
+	}
+	return backfillCheckpoint{
+		TimestampMs: meta.LastSeenMessageTimestampMs,
+		MessageID:   meta.LastSeenMessageID,
+		CursorTsUs:  meta.LastSeenCursorTsUs,
+	}
+}
+
+func checkpointFromRuntime(lastSeen int64) backfillCheckpoint {
+	if lastSeen <= 0 {
+		return backfillCheckpoint{}
+	}
+	return backfillCheckpoint{TimestampMs: lastSeen}
+}
+
+func checkpointAdvanced(next, current backfillCheckpoint) bool {
+	if next.TimestampMs != current.TimestampMs {
+		return next.TimestampMs > current.TimestampMs
+	}
+	if next.TimestampMs == 0 {
+		return false
+	}
+	if next.MessageID != current.MessageID {
+		return next.MessageID != 0
+	}
+	return next.CursorTsUs != 0 && next.CursorTsUs != current.CursorTsUs
+}
+
+func updateCheckpointFromMessage(current *backfillCheckpoint, msg libtiktok.Message) bool {
+	next := backfillCheckpoint{
+		TimestampMs: msg.TimestampMs,
+		MessageID:   msg.ServerID,
+		CursorTsUs:  msg.CursorTsUs,
+	}
+	if !checkpointAdvanced(next, *current) {
+		return false
+	}
+	*current = next
+	return true
+}
+
+func messageIsAfterCheckpoint(msg libtiktok.Message, checkpoint backfillCheckpoint) bool {
+	if checkpoint.TimestampMs == 0 {
+		return true
+	}
+	if msg.TimestampMs > checkpoint.TimestampMs {
+		return true
+	}
+	if msg.TimestampMs < checkpoint.TimestampMs {
+		return false
+	}
+	return checkpoint.MessageID == 0 || msg.ServerID != checkpoint.MessageID
+}
+
+func pageReachedCheckpoint(msgs []libtiktok.Message, checkpoint backfillCheckpoint) bool {
+	if checkpoint.TimestampMs == 0 {
+		return false
+	}
+	for _, msg := range msgs {
+		if msg.TimestampMs < checkpoint.TimestampMs {
+			return true
+		}
+		if msg.TimestampMs == checkpoint.TimestampMs && checkpoint.MessageID != 0 && msg.ServerID == checkpoint.MessageID {
+			return true
+		}
+	}
+	return false
+}
+
+func pageReachedColdStartCutoff(msgs []libtiktok.Message, cutoffMs int64) bool {
+	if cutoffMs <= 0 {
+		return false
+	}
+	for _, msg := range msgs {
+		if msg.TimestampMs < cutoffMs {
+			return true
+		}
+	}
+	return false
+}
+
+func persistCheckpoint(meta *PortalMetadata, checkpoint backfillCheckpoint) bool {
+	if meta == nil {
+		return false
+	}
+	changed := false
+	if meta.LastSeenMessageTimestampMs != checkpoint.TimestampMs {
+		meta.LastSeenMessageTimestampMs = checkpoint.TimestampMs
+		changed = true
+	}
+	if meta.LastSeenMessageID != checkpoint.MessageID {
+		meta.LastSeenMessageID = checkpoint.MessageID
+		changed = true
+	}
+	if meta.LastSeenCursorTsUs != checkpoint.CursorTsUs {
+		meta.LastSeenCursorTsUs = checkpoint.CursorTsUs
+		changed = true
+	}
+	return changed
+}
 
 func portalMeta(portal *bridgev2.Portal) (*PortalMetadata, bool) {
 	if portal == nil {
@@ -148,6 +308,18 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 		return nil
 	}
 
+	maxConversations := tc.connector.initialBackfillMaxConversations()
+	if maxConversations > 0 && len(convs) > maxConversations {
+		log.Info().
+			Int("requested_conversations", len(convs)).
+			Int("limited_conversations", maxConversations).
+			Msg("Limiting startup backfill to the newest inbox conversations")
+		convs = convs[:maxConversations]
+	}
+
+	maxPages := tc.connector.initialBackfillMaxPages()
+	lookback := tc.connector.initialBackfillLookback()
+
 	for i := range convs {
 		conv := &convs[i]
 		log.Debug().
@@ -181,7 +353,8 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 				break
 			}
 		}
-		if err := tc.syncPortalMetadata(ctx, conv); err != nil {
+		portal, err := tc.syncPortalMetadata(ctx, conv)
+		if err != nil {
 			log.Err(err).Str("conversation_id", conv.ID).Msg("Failed to persist portal metadata for conversation")
 			continue
 		}
@@ -189,15 +362,22 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 		tc.mu.Lock()
 		lastSeen := tc.lastSeen[conv.ID]
 		tc.mu.Unlock()
+		storedCheckpoint := checkpointFromPortal(portal)
+		checkpoint := maxCheckpoint(storedCheckpoint, checkpointFromRuntime(lastSeen))
+		coldStartCutoffMs := int64(0)
+		if checkpoint.TimestampMs == 0 {
+			coldStartCutoffMs = time.Now().Add(-lookback).UnixMilli()
+		}
 
-		// Paginate get_by_conversation until the cursor is exhausted. Each page is
-		// up to 20 messages, newest-first in fetch order; we dispatch oldest-first
-		// overall by walking pages from last (oldest batch) to first (newest batch).
+		// Paginate get_by_conversation newest-first, but stop once we reach a
+		// stored checkpoint or the cold-start lookback window. We still dispatch
+		// oldest-first overall by walking the collected pages in reverse.
 		var pages [][]libtiktok.Message
 		cursor := ""
 		truncated := false
+		stopReason := ""
 		for page := 0; ; page++ {
-			if page >= maxBackfillPagesPerConversation {
+			if page >= maxPages {
 				truncated = true
 				break
 			}
@@ -210,7 +390,16 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 				break
 			}
 			pages = append(pages, msgs)
+			if pageReachedCheckpoint(msgs, checkpoint) {
+				stopReason = "checkpoint reached"
+				break
+			}
+			if checkpoint.TimestampMs == 0 && pageReachedColdStartCutoff(msgs, coldStartCutoffMs) {
+				stopReason = "cold-start cutoff reached"
+				break
+			}
 			if next == "" {
+				stopReason = "history exhausted"
 				break
 			}
 			if next == cursor {
@@ -218,6 +407,7 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 					Str("conversation_id", conv.ID).
 					Str("cursor", next).
 					Msg("TikTok history cursor did not advance; stopping backfill pagination")
+				stopReason = "cursor did not advance"
 				break
 			}
 			cursor = next
@@ -225,7 +415,7 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 		if truncated {
 			log.Warn().
 				Str("conversation_id", conv.ID).
-				Int("max_pages", maxBackfillPagesPerConversation).
+				Int("max_pages", maxPages).
 				Msg("Backfill pagination stopped at safety limit (history may be truncated)")
 		}
 
@@ -238,9 +428,14 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 			Int("messages", totalMsgs).
 			Int("pages", len(pages)).
 			Int64("last_seen_ms", lastSeen).
+			Str("stop_reason", stopReason).
+			Int64("stored_checkpoint_ms", storedCheckpoint.TimestampMs).
+			Uint64("stored_checkpoint_id", storedCheckpoint.MessageID).
+			Int64("cold_start_cutoff_ms", coldStartCutoffMs).
 			Msg("Fetched messages for conversation")
 
 		var dispatched int
+		updatedCheckpoint := checkpoint
 		for pi := len(pages) - 1; pi >= 0; pi-- {
 			for _, msg := range pages[pi] {
 				msgLog := log.Debug().
@@ -249,18 +444,22 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 					Str("sender_id", msg.SenderID).
 					Str("type", msg.Type).
 					Int64("ts_ms", msg.TimestampMs).
-					Int64("last_seen_ms", lastSeen)
+					Int64("last_seen_ms", lastSeen).
+					Int64("checkpoint_ms", checkpoint.TimestampMs)
 
-				if msg.TimestampMs <= lastSeen {
+				if !messageIsAfterCheckpoint(msg, checkpoint) {
 					msgLog.Bool("skipped", true).Msg("Skipping already-seen message during backfill")
+					continue
+				}
+				if coldStartCutoffMs > 0 && msg.TimestampMs < coldStartCutoffMs {
+					msgLog.Bool("skipped", true).Msg("Skipping cold-start message older than lookback window")
 					continue
 				}
 				msgLog.Bool("skipped", false).Msg("Dispatching backfill message")
 				tc.dispatchMessage(conv, msg)
 				dispatched++
-				if msg.TimestampMs > lastSeen {
-					lastSeen = msg.TimestampMs
-				}
+				updateCheckpointFromMessage(&updatedCheckpoint, msg)
+				lastSeen = updatedCheckpoint.TimestampMs
 			}
 		}
 
@@ -278,6 +477,20 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 				Msg("Updated last-seen cache after backfill")
 		}
 		tc.mu.Unlock()
+		if checkpointAdvanced(updatedCheckpoint, storedCheckpoint) {
+			meta := ensurePortalMeta(log, portal)
+			if persistCheckpoint(meta, updatedCheckpoint) {
+				log.Debug().
+					Str("conversation_id", conv.ID).
+					Int64("last_seen_message_timestamp_ms", updatedCheckpoint.TimestampMs).
+					Uint64("last_seen_message_id", updatedCheckpoint.MessageID).
+					Uint64("last_seen_cursor_ts_us", updatedCheckpoint.CursorTsUs).
+					Msg("Persisting backfill checkpoint to portal metadata")
+				if err := portal.Save(ctx); err != nil {
+					log.Err(err).Str("conversation_id", conv.ID).Msg("Failed to save portal backfill checkpoint")
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -448,14 +661,14 @@ func (tc *TikTokClient) updatePortalMetadata(portal *bridgev2.Portal, conv *libt
 	return changed
 }
 
-func (tc *TikTokClient) syncPortalMetadata(ctx context.Context, conv *libtiktok.Conversation) error {
+func (tc *TikTokClient) syncPortalMetadata(ctx context.Context, conv *libtiktok.Conversation) (*bridgev2.Portal, error) {
 	log := zerolog.Ctx(ctx)
 	portal, err := tc.userLogin.Bridge.GetPortalByKey(ctx, networkid.PortalKey{
 		ID:       makePortalID(conv.ID),
 		Receiver: tc.userLogin.ID,
 	})
 	if err != nil {
-		return fmt.Errorf("get portal for metadata sync: %w", err)
+		return nil, fmt.Errorf("get portal for metadata sync: %w", err)
 	}
 	if tc.updatePortalMetadata(portal, conv) {
 		log.Debug().
@@ -463,7 +676,7 @@ func (tc *TikTokClient) syncPortalMetadata(ctx context.Context, conv *libtiktok.
 			Str("conversation_id", conv.ID).
 			Msg("Saving updated portal metadata")
 		if err := portal.Save(ctx); err != nil {
-			return fmt.Errorf("save portal metadata: %w", err)
+			return nil, fmt.Errorf("save portal metadata: %w", err)
 		}
 	} else {
 		log.Debug().
@@ -472,7 +685,7 @@ func (tc *TikTokClient) syncPortalMetadata(ctx context.Context, conv *libtiktok.
 			Msg("Portal metadata already up to date")
 	}
 	tc.applyPortalMuteState(ctx, portal, conv.Muted)
-	return nil
+	return portal, nil
 }
 
 func (tc *TikTokClient) getConversationForPortal(ctx context.Context, portal *bridgev2.Portal) (*libtiktok.Conversation, error) {

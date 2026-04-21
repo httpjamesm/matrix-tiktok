@@ -71,10 +71,21 @@ func (tc *TikTokConnector) GetName() bridgev2.BridgeName {
 // Config holds TikTok-specific configuration values that live under the
 // `network:` key in config.yaml.
 type Config struct {
-	// TODO: add TikTok-specific fields as the PoC connector is integrated.
-	// Example:
-	//   DeviceID    string `yaml:"device_id"`
-	//   Proxy       string `yaml:"proxy"`
+	// How often to poll TikTok for new messages.
+	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
+	// Optional override for the TikTok API base URL.
+	APIBaseURL string `yaml:"api_base_url"`
+	// Optional override for the TikTok HTTP User-Agent.
+	UserAgent string `yaml:"user_agent"`
+	// Maximum REST history pages to fetch per conversation on connect.
+	// Zero uses the built-in default.
+	InitialBackfillMaxPages int `yaml:"initial_backfill_max_pages"`
+	// Maximum number of inbox conversations to history-fetch on connect.
+	// Zero means all inbox conversations.
+	InitialBackfillMaxConversations int `yaml:"initial_backfill_max_conversations"`
+	// How far back startup backfill should look for conversations without a
+	// stored checkpoint. Zero uses the built-in default.
+	InitialBackfillLookbackHours int `yaml:"initial_backfill_lookback_hours"`
 }
 
 //go:embed example-config.yaml
@@ -139,6 +150,14 @@ type PortalMetadata struct {
 	ConversationType uint64 `json:"conversation_type,omitempty"`
 	// Muted caches the per-user TikTok mute state derived from get_by_user_init field 51 metadata.
 	Muted *bool `json:"muted,omitempty"`
+	// LastSeenMessageTimestampMs is the highest TikTok message timestamp that was
+	// queued during startup backfill.
+	LastSeenMessageTimestampMs int64 `json:"last_seen_message_timestamp_ms,omitempty"`
+	// LastSeenMessageID is the server message id paired with LastSeenMessageTimestampMs.
+	LastSeenMessageID uint64 `json:"last_seen_message_id,omitempty"`
+	// LastSeenCursorTsUs is the wire cursor_ts_us of the newest queued message,
+	// retained as extra resume/debug context for future backfill tuning.
+	LastSeenCursorTsUs uint64 `json:"last_seen_cursor_ts_us,omitempty"`
 }
 
 // MessageMetadata stores TikTok-specific data alongside each bridged message.

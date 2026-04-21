@@ -11,3 +11,15 @@ api_base_url: ""
 # Optional: a custom User-Agent string to send with TikTok API requests.
 # Leave empty to use the default built into the TikTok PoC client.
 user_agent: ""
+
+# Maximum REST history pages (each up to ~20 messages) fetched per conversation on connect.
+# Zero uses the built-in default.
+initial_backfill_max_pages: 0
+
+# Optional cap on how many inbox threads get a history fetch per connect (first N from inbox).
+# Zero means all conversations.
+initial_backfill_max_conversations: 0
+
+# For portals without a stored checkpoint, only backfill messages from this many recent hours.
+# Zero uses the built-in default.
+initial_backfill_lookback_hours: 0
