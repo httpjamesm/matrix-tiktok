@@ -12,9 +12,10 @@ A Matrix bridge for TikTok Messages. Intended for usage with Beeper.
   - [ ] Voice Notes
   - [x] TikToks
 - [x] Reactions
-- [x] Typing Indicators
+- [x] Typing indicators
 - [x] Mark conversation as read
 - [x] Replies
+- [x] Read receipts
 - [x] Group chats
 - [x] Delete message for everyone
 
