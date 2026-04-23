@@ -13,7 +13,8 @@
 FROM golang:1.25-bookworm AS builder
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libc6-dev libsqlite3-dev \
+    && apt-get install -y --no-install-recommends \
+        gcc libc6-dev libsqlite3-dev libolm-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -40,7 +41,8 @@ RUN MAUTRIX_VERSION="$(grep 'maunium.net/go/mautrix ' go.mod | awk '{print $2}' 
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 tzdata \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates libsqlite3-0 libolm3 tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --home-dir /data --shell /usr/sbin/nologin bridge \
     && install -d -o bridge -g bridge /data

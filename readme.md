@@ -29,21 +29,40 @@ A Matrix bridge for TikTok Messages. Intended for usage with Beeper.
 
 ## Running
 
-### 1. Install `bbctl`
+### Docker (GHCR)
+
+Container images are published to **GitHub Container Registry**:
+
+`ghcr.io/httpjamesm/matrix-tiktok`
+
+Use the image tag that matches the [GitHub release](https://github.com/httpjamesm/matrix-tiktok/releases) you want (for example `v1.0.0`). Mount your `bbctl`-generated config at `/data/config.yaml`:
+
+```bash
+docker pull ghcr.io/httpjamesm/matrix-tiktok:<tag>
+docker run --rm \
+  -v /path/to/config.yaml:/data/config.yaml:ro \
+  ghcr.io/httpjamesm/matrix-tiktok:<tag>
+```
+
+With Beeper’s default `homeserver.websocket` setup you usually do **not** need to publish an appservice port; add `-p host:container` only if your config uses inbound appservice HTTP instead of the websocket.
+
+### From source
+
+#### 1. Install `bbctl`
 
 Install `bbctl` from Beeper's [documentation](https://developers.beeper.com/bridges/self-hosting/#step-1-download-bbctl).
 
 Run `bbctl login` to log into your Beeper account.
 
-### 2. Generate configuration
+#### 2. Generate configuration
 
 Run `bbctl config --type bridgev2 -o config.yaml sh-tiktok` to create a configuration in the project root directory.
 
-### 3. Run with config
+#### 3. Run with config
 
 Run `go run cmd/matrix-tiktok/main.go -c config.yaml`.
 
-### 4. Login
+#### 4. Login
 
 Send an invitation to `@sh-tiktokbot:beeper.local` on Beeper and send "login".
 
