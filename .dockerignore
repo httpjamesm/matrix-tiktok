@@ -1,0 +1,19 @@
+.git
+.github
+.cursor
+.devcontainer
+
+logs
+*.log
+
+# Local secrets / generated config (mount at runtime instead)
+config.yaml
+config.toml
+
+# Binaries and local artifacts
+/matrix-tiktok
+/libtiktok-test
+*.db
+*.db-*
+
+*.mp4
