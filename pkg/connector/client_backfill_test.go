@@ -12,19 +12,31 @@ import (
 
 func TestConnectorInitialBackfillDefaultsAndClamp(t *testing.T) {
 	tc := &TikTokConnector{}
-	if got := tc.initialBackfillMaxPages(); got != defaultInitialBackfillMaxPages {
-		t.Fatalf("initialBackfillMaxPages() = %d, want %d", got, defaultInitialBackfillMaxPages)
+	if got := tc.initialBackfillMaxPages(false); got != defaultInitialBackfillMaxPages {
+		t.Fatalf("initialBackfillMaxPages(false) = %d, want %d", got, defaultInitialBackfillMaxPages)
+	}
+	if got := tc.initialBackfillMaxPages(true); got != hardMaxBackfillPagesPerConversation {
+		t.Fatalf("initialBackfillMaxPages(true) = %d, want %d", got, hardMaxBackfillPagesPerConversation)
 	}
 	if got := tc.initialBackfillMaxConversations(); got != 0 {
 		t.Fatalf("initialBackfillMaxConversations() = %d, want 0", got)
 	}
-	if got := tc.initialBackfillLookback(); got != 72*time.Hour {
-		t.Fatalf("initialBackfillLookback() = %s, want 72h", got)
+	if got := tc.initialBackfillLookback(); got != 0 {
+		t.Fatalf("initialBackfillLookback() = %s, want 0", got)
 	}
 
+	tc.Config.InitialBackfillLookbackHours = 24
+	if got := tc.initialBackfillLookback(); got != 24*time.Hour {
+		t.Fatalf("initialBackfillLookback() = %s, want 24h", got)
+	}
+	tc.Config.InitialBackfillLookbackHours = 0
+
 	tc.Config.InitialBackfillMaxPages = hardMaxBackfillPagesPerConversation + 1
-	if got := tc.initialBackfillMaxPages(); got != hardMaxBackfillPagesPerConversation {
-		t.Fatalf("initialBackfillMaxPages() with clamp = %d, want %d", got, hardMaxBackfillPagesPerConversation)
+	if got := tc.initialBackfillMaxPages(false); got != hardMaxBackfillPagesPerConversation {
+		t.Fatalf("initialBackfillMaxPages(false) with clamp = %d, want %d", got, hardMaxBackfillPagesPerConversation)
+	}
+	if got := tc.initialBackfillMaxPages(true); got != hardMaxBackfillPagesPerConversation {
+		t.Fatalf("initialBackfillMaxPages(true) with clamp = %d, want %d", got, hardMaxBackfillPagesPerConversation)
 	}
 }
 
@@ -105,6 +117,20 @@ func TestPageReachedCheckpoint(t *testing.T) {
 		{ServerID: 21, TimestampMs: 2100},
 	}, checkpoint) {
 		t.Fatal("pageReachedCheckpoint() = true, want false before checkpoint boundary")
+	}
+}
+
+func TestHistoryPageFingerprint(t *testing.T) {
+	a := []libtiktok.Message{{ServerID: 1}, {ServerID: 2}}
+	b := []libtiktok.Message{{ServerID: 1}, {ServerID: 2}}
+	if historyPageFingerprint(a) != historyPageFingerprint(b) {
+		t.Fatal("historyPageFingerprint should match for same server IDs")
+	}
+	if historyPageFingerprint(a) == historyPageFingerprint([]libtiktok.Message{{ServerID: 3}}) {
+		t.Fatal("historyPageFingerprint should differ for different messages")
+	}
+	if historyPageFingerprint(nil) != 0 || historyPageFingerprint([]libtiktok.Message{}) != 0 {
+		t.Fatal("historyPageFingerprint(empty) = 0")
 	}
 }
 

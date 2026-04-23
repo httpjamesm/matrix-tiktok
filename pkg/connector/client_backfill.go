@@ -19,12 +19,10 @@ const (
 	// hardMaxBackfillPagesPerConversation is a safety clamp for user-configured
 	// startup backfill limits so a stuck cursor cannot loop forever.
 	hardMaxBackfillPagesPerConversation = 10000
-	// defaultInitialBackfillMaxPages bounds cold-start history fetches and also
-	// caps incremental catch-up pagination on connect.
+	// defaultInitialBackfillMaxPages caps incremental catch-up pagination on
+	// connect when the user leaves initial_backfill_max_pages at zero and a
+	// portal already has a stored checkpoint.
 	defaultInitialBackfillMaxPages = 5
-	// defaultInitialBackfillLookbackHours limits startup backfill for portals
-	// without a stored checkpoint.
-	defaultInitialBackfillLookbackHours = 72
 )
 
 type backfillCheckpoint struct {
@@ -33,10 +31,13 @@ type backfillCheckpoint struct {
 	CursorTsUs  uint64
 }
 
-func (tc *TikTokConnector) initialBackfillMaxPages() int {
+func (tc *TikTokConnector) initialBackfillMaxPages(coldStart bool) int {
 	pages := tc.Config.InitialBackfillMaxPages
 	switch {
 	case pages <= 0:
+		if coldStart {
+			return hardMaxBackfillPagesPerConversation
+		}
 		return defaultInitialBackfillMaxPages
 	case pages > hardMaxBackfillPagesPerConversation:
 		return hardMaxBackfillPagesPerConversation
@@ -52,12 +53,14 @@ func (tc *TikTokConnector) initialBackfillMaxConversations() int {
 	return tc.Config.InitialBackfillMaxConversations
 }
 
+// initialBackfillLookback returns a maximum age for cold-start history when
+// InitialBackfillLookbackHours is positive. Zero means no time cutoff (fetch
+// until the API runs out of history, subject to the page cap).
 func (tc *TikTokConnector) initialBackfillLookback() time.Duration {
-	hours := tc.Config.InitialBackfillLookbackHours
-	if hours <= 0 {
-		hours = defaultInitialBackfillLookbackHours
+	if tc == nil || tc.Config.InitialBackfillLookbackHours <= 0 {
+		return 0
 	}
-	return time.Duration(hours) * time.Hour
+	return time.Duration(tc.Config.InitialBackfillLookbackHours) * time.Hour
 }
 
 func maxCheckpoint(a, b backfillCheckpoint) backfillCheckpoint {
@@ -158,6 +161,19 @@ func pageReachedColdStartCutoff(msgs []libtiktok.Message, cutoffMs int64) bool {
 		}
 	}
 	return false
+}
+
+// historyPageFingerprint hashes a non-empty page of messages so we can detect
+// when TikTok returns the same window again while claiming a new cursor.
+func historyPageFingerprint(msgs []libtiktok.Message) uint64 {
+	if len(msgs) == 0 {
+		return 0
+	}
+	var h uint64 = uint64(len(msgs))
+	for _, m := range msgs {
+		h = h*1315423911 ^ m.ServerID
+	}
+	return h
 }
 
 func persistCheckpoint(meta *PortalMetadata, checkpoint backfillCheckpoint) bool {
@@ -317,7 +333,6 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 		convs = convs[:maxConversations]
 	}
 
-	maxPages := tc.connector.initialBackfillMaxPages()
 	lookback := tc.connector.initialBackfillLookback()
 
 	for i := range convs {
@@ -364,18 +379,22 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 		tc.mu.Unlock()
 		storedCheckpoint := checkpointFromPortal(portal)
 		checkpoint := maxCheckpoint(storedCheckpoint, checkpointFromRuntime(lastSeen))
+		coldStart := checkpoint.TimestampMs == 0
+		maxPages := tc.connector.initialBackfillMaxPages(coldStart)
 		coldStartCutoffMs := int64(0)
-		if checkpoint.TimestampMs == 0 {
+		if coldStart && lookback > 0 {
 			coldStartCutoffMs = time.Now().Add(-lookback).UnixMilli()
 		}
 
 		// Paginate get_by_conversation newest-first, but stop once we reach a
-		// stored checkpoint or the cold-start lookback window. We still dispatch
-		// oldest-first overall by walking the collected pages in reverse.
+		// stored checkpoint, optional cold-start lookback (if configured), or the
+		// page cap. We still dispatch oldest-first overall by walking the
+		// collected pages in reverse.
 		var pages [][]libtiktok.Message
 		cursor := ""
 		truncated := false
 		stopReason := ""
+		var prevPageFingerprint uint64
 		for page := 0; ; page++ {
 			if page >= maxPages {
 				truncated = true
@@ -389,6 +408,17 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 					Msg("Error fetching messages for conversation")
 				break
 			}
+			fp := historyPageFingerprint(msgs)
+			if fp != 0 && page > 0 && fp == prevPageFingerprint {
+				log.Warn().
+					Str("conversation_id", conv.ID).
+					Int("backfill_page", page).
+					Msg("TikTok history returned an identical message page; stopping to avoid a pagination loop")
+				stopReason = "repeated page"
+				break
+			}
+			prevPageFingerprint = fp
+
 			pages = append(pages, msgs)
 			if pageReachedCheckpoint(msgs, checkpoint) {
 				stopReason = "checkpoint reached"

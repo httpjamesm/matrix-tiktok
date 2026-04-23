@@ -78,13 +78,15 @@ type Config struct {
 	// Optional override for the TikTok HTTP User-Agent.
 	UserAgent string `yaml:"user_agent"`
 	// Maximum REST history pages to fetch per conversation on connect.
-	// Zero uses the built-in default.
+	// Zero uses a built-in default: full history (until the safety cap) for
+	// portals without a checkpoint, otherwise a small catch-up page count.
 	InitialBackfillMaxPages int `yaml:"initial_backfill_max_pages"`
 	// Maximum number of inbox conversations to history-fetch on connect.
 	// Zero means all inbox conversations.
 	InitialBackfillMaxConversations int `yaml:"initial_backfill_max_conversations"`
-	// How far back startup backfill should look for conversations without a
-	// stored checkpoint. Zero uses the built-in default.
+	// For portals without a stored checkpoint, optionally ignore messages older
+	// than this many hours. Zero means no time limit (backfill until history is
+	// exhausted or initial_backfill_max_pages is hit).
 	InitialBackfillLookbackHours int `yaml:"initial_backfill_lookback_hours"`
 }
 

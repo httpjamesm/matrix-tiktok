@@ -12,14 +12,14 @@ api_base_url: ""
 # Leave empty to use the default built into the TikTok PoC client.
 user_agent: ""
 
-# Maximum REST history pages (each up to ~20 messages) fetched per conversation on connect.
-# Zero uses the built-in default.
+# Maximum REST history pages (each up to ~20 messages) per conversation on connect.
+# Zero: full fetch up to the safety cap for conversations with no checkpoint; a small default for others.
 initial_backfill_max_pages: 0
 
 # Optional cap on how many inbox threads get a history fetch per connect (first N from inbox).
 # Zero means all conversations.
 initial_backfill_max_conversations: 0
 
-# For portals without a stored checkpoint, only backfill messages from this many recent hours.
-# Zero uses the built-in default.
+# For portals without a stored checkpoint, optionally skip messages older than this many hours.
+# Zero (or omit) means no time limit — backfill until TikTok history is exhausted (subject to max pages).
 initial_backfill_lookback_hours: 0

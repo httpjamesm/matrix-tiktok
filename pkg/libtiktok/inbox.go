@@ -607,8 +607,10 @@ func parseMessageEntry(ctx context.Context, c *Client, entry *tiktokpb.Conversat
 }
 
 // parseGetByConversationResponse decodes the protobuf response body.
-// Returns the list of messages and the next-page cursor (field-25 timestamp of
-// the oldest/last returned message, as a decimal string).
+// Returns the list of messages and the next-page cursor: the minimum non-zero
+// field-25 cursor_ts_us among entries (oldest anchor in the batch). Using the
+// minimum is required regardless of whether the server lists entries newest-
+// or oldest-first; using only the last wire row could repeat the same page forever.
 func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte) ([]Message, string, error) {
 	log := zerolog.Ctx(ctx)
 	var resp tiktokpb.GetByConversationResponse
@@ -622,7 +624,15 @@ func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte)
 	}
 
 	messages := make([]Message, 0, len(entries))
-	var lastCursorTs uint64
+	var minCursorTs uint64
+	considerCursor := func(cursorTs uint64) {
+		if cursorTs == 0 {
+			return
+		}
+		if minCursorTs == 0 || cursorTs < minCursorTs {
+			minCursorTs = cursorTs
+		}
+	}
 	for i, entry := range entries {
 		m, cursorTs, err := parseMessageEntry(ctx, c, entry)
 		if errors.Is(err, errSkipSyncedMessage) {
@@ -631,9 +641,7 @@ func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte)
 				Int("entries_total", len(entries)).
 				Uint64("cursor_ts_us", cursorTs).
 				Msg("Skipping synced/recalled conversation message entry")
-			if cursorTs != 0 {
-				lastCursorTs = cursorTs
-			}
+			considerCursor(cursorTs)
 			continue
 		}
 		if err != nil {
@@ -645,9 +653,7 @@ func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte)
 			continue
 		}
 		messages = append(messages, m)
-		if cursorTs != 0 {
-			lastCursorTs = cursorTs
-		}
+		considerCursor(cursorTs)
 	}
 
 	// Reverse so messages are in chronological order (oldest first).
@@ -656,8 +662,8 @@ func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte)
 	}
 
 	nextCursor := ""
-	if lastCursorTs != 0 {
-		nextCursor = strconv.FormatUint(lastCursorTs, 10)
+	if minCursorTs != 0 {
+		nextCursor = strconv.FormatUint(minCursorTs, 10)
 	}
 	return messages, nextCursor, nil
 }
