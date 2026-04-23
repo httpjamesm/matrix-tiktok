@@ -8,6 +8,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
         python3-venv \
         ffmpeg \
         postgresql-client \
+        libolm-dev \
         ca-certificates \
         curl \
     && ARCH="$(dpkg --print-architecture)" \
