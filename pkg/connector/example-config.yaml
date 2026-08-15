@@ -10,7 +10,10 @@ api_base_url: ""
 
 # Optional: a custom User-Agent string to send with TikTok API requests.
 # Leave empty to use the default built into the TikTok PoC client.
-user_agent: ""
+user_agent: ""
+# Default proxy (http/https/socks5) for TikTok traffic. A per-login
+# proxy_url in the login metadata overrides this. Empty means no proxy.
+proxy: ""
 
 # Maximum REST history pages (each up to ~20 messages) per conversation on connect.
 # Zero: full fetch up to the safety cap for conversations with no checkpoint; a small default for others.
