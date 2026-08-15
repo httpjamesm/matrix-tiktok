@@ -54,6 +54,12 @@ func (c *Client) GetSelf(ctx context.Context) (*Self, error) {
 // returns HTML without usable hydration data on back-to-back requests, which
 // is especially visible right after an interactive login validates the
 // session and Connect immediately re-validates.
+//
+// Keep maxAttempts small. GetSelf loads the /messages page, and that loader
+// already retries up to four times with its own backoff for the shell-page
+// throttle. Stacking a large outer count on top multiplied into as many as
+// twenty page loads over ~40 seconds on every connect. Two outer attempts is
+// enough to absorb a genuine one-off; the inner loop owns the throttle.
 func (c *Client) GetSelfWithRetry(ctx context.Context, maxAttempts int) (*Self, error) {
 	if maxAttempts < 1 {
 		maxAttempts = 1

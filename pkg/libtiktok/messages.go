@@ -496,12 +496,12 @@ func buildMarkConversationReadPayload(p MarkConversationReadParams, deviceID, ms
 		FinalFlag:      protoUint64(1),
 		Payload: &tiktokpb.MarkConversationReadRequestPayload{
 			MarkConversationRead: &tiktokpb.MarkConversationReadRequestBody{
-				ConversationId:       protoString(p.ConvID),
-				ConversationShortId:    protoUint64(p.ConvSourceID),
-				ConversationType:     protoUint64(p.ConversationType),
-				ReadMessageIndex:     protoUint64(p.ReadMessageIndex),
-				ConvUnreadCount:      protoUint64(p.ConvUnreadCount),
-				TotalUnreadCount:     protoUint64(p.TotalUnreadCount),
+				ConversationId:      protoString(p.ConvID),
+				ConversationShortId: protoUint64(p.ConvSourceID),
+				ConversationType:    protoUint64(p.ConversationType),
+				ReadMessageIndex:    protoUint64(p.ReadMessageIndex),
+				ConvUnreadCount:     protoUint64(p.ConvUnreadCount),
+				TotalUnreadCount:    protoUint64(p.TotalUnreadCount),
 			},
 		},
 	}
@@ -885,8 +885,8 @@ func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
 	if err != nil {
 		return fmt.Errorf("POST set_property: %w", err)
 	}
-	if resp.IsError() {
-		return fmt.Errorf("set_property API returned %d: %s", resp.StatusCode(), resp.String())
+	if err := c.checkResponse("set_property", resp); err != nil {
+		return err
 	}
 
 	return nil
@@ -938,8 +938,8 @@ func (c *Client) SendTyping(ctx context.Context, p SendTypingParams) error {
 	if err != nil {
 		return fmt.Errorf("POST input_status: %w", err)
 	}
-	if resp.IsError() {
-		return fmt.Errorf("input_status API returned %d: %s", resp.StatusCode(), resp.String())
+	if err := c.checkResponse("input_status", resp); err != nil {
+		return err
 	}
 
 	return nil
@@ -991,8 +991,8 @@ func (c *Client) MarkConversationRead(ctx context.Context, p MarkConversationRea
 	if err != nil {
 		return fmt.Errorf("POST mark_read: %w", err)
 	}
-	if resp.IsError() {
-		return fmt.Errorf("mark_read API returned %d: %s", resp.StatusCode(), resp.String())
+	if err := c.checkResponse("mark_read", resp); err != nil {
+		return err
 	}
 
 	return nil
@@ -1103,8 +1103,8 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 	if err != nil {
 		return nil, fmt.Errorf("POST send message: %w", err)
 	}
-	if resp.IsError() {
-		return nil, fmt.Errorf("send API returned %d: %s", resp.StatusCode(), resp.String())
+	if err := c.checkResponse("send", resp); err != nil {
+		return nil, err
 	}
 
 	msgID, err := parseSendResponse(resp.Body())
@@ -1154,8 +1154,8 @@ func (c *Client) RecallMessage(ctx context.Context, p DeleteMessageParams) error
 	if err != nil {
 		return fmt.Errorf("POST recall message: %w", err)
 	}
-	if resp.IsError() {
-		return fmt.Errorf("recall message API returned %d: %s", resp.StatusCode(), resp.String())
+	if err := c.checkResponse("recall message", resp); err != nil {
+		return err
 	}
 
 	return nil
@@ -1202,8 +1202,8 @@ func (c *Client) DeleteMessage(ctx context.Context, p DeleteMessageParams) error
 	if err != nil {
 		return fmt.Errorf("POST delete message: %w", err)
 	}
-	if resp.IsError() {
-		return fmt.Errorf("delete message API returned %d: %s", resp.StatusCode(), resp.String())
+	if err := c.checkResponse("delete message", resp); err != nil {
+		return err
 	}
 
 	return nil
