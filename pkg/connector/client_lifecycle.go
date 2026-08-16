@@ -110,8 +110,21 @@ func (tc *TikTokClient) sendGetSelfBridgeState(err error) {
 	}
 	switch {
 	case libtiktok.IsAuthRejected(err):
+		// Only when TikTok has actually established the session is dead: a 401,
+		// or a page that loads and contains no signed-in user.
 		st.StateEvent = status.StateBadCredentials
 		st.Message = "TikTok session is no longer valid — please log in again"
+	case libtiktok.IsRateLimited(err):
+		st.StateEvent = status.StateTransientDisconnect
+		st.Message = "TikTok is rate limiting this account — waiting before trying again"
+	case libtiktok.IsAccessRestricted(err):
+		// A 403 used to land in the case above and tell the customer to
+		// reconnect. It can just as easily be a geographic restriction, a
+		// challenge or a temporarily limited endpoint, none of which a new
+		// login fixes — and following that instruction costs them a session
+		// that was working.
+		st.StateEvent = status.StateUnknownError
+		st.Message = "TikTok refused the request — the session still looks valid, so do not reconnect yet"
 	default:
 		st.StateEvent = status.StateUnknownError
 		st.Message = "TikTok session check failed (temporary or unclear error) — try again or restart the bridge"
@@ -138,10 +151,19 @@ func (tc *TikTokClient) IsLoggedIn() bool {
 // LogoutRemote is a no-op — the unofficial TikTok API has no logout endpoint.
 func (tc *TikTokClient) LogoutRemote(_ context.Context) {}
 
+// initialReconnectBackoff is the first wait after a failed or short-lived
+// WebSocket connection; it doubles from there up to maxBackoff.
+const initialReconnectBackoff = 5 * time.Second
+
+// minStableConnection is how long a WebSocket must stay up before the drop is
+// treated as ordinary network loss rather than the server refusing the session.
+// Below it, the reconnect is backed off; above it, the backoff resets.
+const minStableConnection = 2 * time.Minute
+
 // wsLoop dials the TikTok IM WebSocket and dispatches incoming chat events
-// until ctx is cancelled. On disconnect it waits with exponential back-off
-// before reconnecting so that transient server errors do not cause a tight
-// reconnect storm.
+// until ctx is cancelled. Every path back to the dial goes through the
+// back-off scheduler, so neither a refused dial nor a connection the server
+// accepts and immediately drops can produce a tight reconnect loop.
 func (tc *TikTokClient) wsLoop(ctx context.Context) {
 	log := tc.userLogin.Log.With().Str("component", "tiktok-ws").Logger()
 	ctx = log.WithContext(ctx)
@@ -149,7 +171,7 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 	log.Info().Msg("Starting TikTok IM WebSocket loop")
 	defer log.Info().Msg("TikTok IM WebSocket loop stopped")
 
-	backoff := 5 * time.Second
+	backoff := initialReconnectBackoff
 	const maxBackoff = 5 * time.Minute
 
 	for {
@@ -171,8 +193,7 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 				continue
 			}
 		}
-		backoff = 5 * time.Second
-
+		connectedAt := time.Now()
 		log.Info().Msg("WebSocket connected, listening for messages")
 
 		for evt := range ch {
@@ -235,11 +256,41 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 			}
 		}
 
+		// A dropped connection goes through the same scheduler as a failed dial.
+		//
+		// This used to log a retry_in and then reconnect immediately, and reset
+		// the backoff on any successful dial. So a server that accepts the
+		// handshake and drops it - which is what a gateway does when it is
+		// soft-refusing a session - produced an unthrottled redial loop that
+		// could never escalate, for as long as it kept happening.
+		//
+		// Only a connection that held long enough to be real earns an immediate
+		// reconnect and a reset. Same rule the Meta bridge applies to its own
+		// sockets.
+		if time.Since(connectedAt) >= minStableConnection {
+			backoff = initialReconnectBackoff
+			log.Warn().Msg("WebSocket disconnected after a stable session, reconnecting")
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			continue
+		}
+
+		wait := backoff + time.Duration((rand.Float64()*0.4-0.2)*float64(backoff))
+		log.Warn().
+			Dur("connected_for", time.Since(connectedAt)).
+			Dur("retry_in", wait).
+			Msg("WebSocket dropped without a stable session, backing off")
 		select {
 		case <-ctx.Done():
 			return
-		default:
-			log.Warn().Dur("retry_in", backoff).Msg("WebSocket disconnected, reconnecting")
+		case <-time.After(wait):
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		}
 	}
 }

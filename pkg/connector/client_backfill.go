@@ -361,6 +361,14 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 
 	for i := range convs {
 		conv := &convs[i]
+		// Pace between conversations as well as between pages. The page
+		// loop below only pauses from its second page on, so the first
+		// request of each conversation had no gap before it - and on a warm
+		// reconnect most conversations stop after one page, which made the
+		// whole pass one request per conversation, back to back.
+		if i > 0 {
+			backfillPause(ctx)
+		}
 		log.Debug().
 			Str("conversation_id", conv.ID).
 			Strs("participants", conv.Participants).

@@ -56,6 +56,9 @@ type Client struct {
 	// ttl is this client own cache refresh interval; see universalDataTTL.
 	ttl time.Duration
 
+	// gate is the account-wide throttle pause. See rateGate.
+	gate rateGate
+
 	// sendMu serialises outgoing messages so the pacing floor is per account
 	// rather than per caller.
 	sendMu   sync.Mutex
@@ -398,13 +401,28 @@ func NewClient(cookieString, proxyURL string) *Client {
 	attachSessionCookie(r, session)
 	attachSessionCookie(rIA, session)
 
-	return &Client{
+	client := &Client{
 		r:       r,
 		rIA:     rIA,
 		scraper: scraper,
 		ttl:     jitteredTTL(),
-		session: newSessionStore(cookieString),
+		// The same store the middleware above writes rotations into. Building a
+		// second one here from the same string compiles, passes the tests, and
+		// silently breaks the whole feature: the HTTP clients would follow
+		// rotations while the WebSocket dial, the request payloads and the
+		// persisted cookie all kept reading the original values.
+		session: session,
 	}
+
+	// Every request waits out an account-wide throttle, rather than each call
+	// site being trusted to remember. Attached to all three clients: a pause
+	// earned by the API is not a licence for the media client to keep pulling.
+	for _, rc := range []*resty.Client{r, rIA, scraper} {
+		rc.OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
+			return client.gate.wait(req.Context())
+		})
+	}
+	return client
 }
 
 // attachSessionCookie sends the session only to TikTok.
@@ -493,6 +511,14 @@ const (
 
 func hardenClient(c *resty.Client) {
 	c.SetTimeout(requestTimeout)
+
+	// resty installs a cookie jar by default, which means every Set-Cookie is
+	// absorbed twice: once by the session store above, once by the jar. Go then
+	// appends the jar's copy to the explicit Cookie header, so requests went out
+	// carrying the same name twice - and the two copies drift, because the store
+	// only accepts a known set of rotating names and refuses deletions while the
+	// jar accepts everything. One store, one copy, one header.
+	c.SetCookieJar(nil)
 
 	base, ok := c.GetClient().Transport.(*http.Transport)
 	if !ok || base == nil {

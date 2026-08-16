@@ -24,16 +24,20 @@ func (c *Client) GetSelf(ctx context.Context) (*Self, error) {
 		return nil, fmt.Errorf("failed to get appContext: %w", err)
 	}
 
+	// A page that parses but carries no signed-in user is TikTok telling us the
+	// cookies are dead. This is the signal that actually means "log in again",
+	// and it used to be reported as an unclear parse failure while a 403 - which
+	// means no such thing - was the one that told the customer to reconnect.
 	user, ok := appContext["user"].(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("user not found or wrong type")
+		return nil, &ErrAuthRejected{}
 	}
 
 	uid, _ := user["uid"].(string)
 	uniqueID, _ := user["uniqueId"].(string)
 	nickname, _ := user["nickName"].(string)
 	if uid == "" || uniqueID == "" {
-		return nil, fmt.Errorf("user fields missing uid or uniqueId")
+		return nil, &ErrAuthRejected{}
 	}
 
 	var avatarURL string

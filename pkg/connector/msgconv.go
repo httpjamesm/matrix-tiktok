@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -52,6 +53,8 @@ func (tc *TikTokClient) convertMessage(
 		return tc.convertStickerMessage(ctx, portal, intent, msg)
 	case "video":
 		return tc.convertVideoMessage(ctx, portal, intent, msg)
+	case "photo":
+		return tc.convertPhotoMessage(ctx, portal, intent, msg)
 	default:
 		// Any other unsupported type falls back to a
 		// notice so the user knows something arrived even if we can't render it.
@@ -341,8 +344,16 @@ func (tc *TikTokClient) convertVideoMessage(
 		data, mime, err = tc.apiClient.DownloadVideo(ctx, msg.MediaURL)
 	}
 	if err != nil {
-		log.Warn().Err(err).Str("url", msg.MediaURL).
-			Msg("Failed to download TikTok video; falling back to text")
+		// A deleted, private or region-blocked post is not a bridge failure, and
+		// logging it at the same level as a real fault buries the ones worth
+		// chasing.
+		if errors.Is(err, libtiktok.ErrVideoUnavailable) {
+			log.Debug().Err(err).Str("url", msg.MediaURL).
+				Msg("TikTok post is unavailable; sending the link only")
+		} else {
+			log.Warn().Err(err).Str("url", msg.MediaURL).
+				Msg("Failed to download TikTok video; falling back to text")
+		}
 		return convertVideoFallback(msg), nil
 	}
 
@@ -404,6 +415,80 @@ func (tc *TikTokClient) convertVideoMessage(
 				Content:    content,
 				DBMetadata: vmeta,
 			},
+		},
+	}, nil
+}
+
+// convertPhotoMessage renders a shared TikTok photo post (photomode, aweType
+// 810) as an m.image using the pre-signed cover URL TikTok puts in the DM
+// payload. No page scraping is involved, so this path does not inherit the
+// video downloader's fragility.
+//
+// Before this existed, 810 fell through to convertUnknownMessage and every
+// shared photo post arrived as the literal text "[unsupported message type:
+// type_810]" — with the cover URL, dimensions and item ID all discarded.
+func (tc *TikTokClient) convertPhotoMessage(
+	ctx context.Context,
+	portal *bridgev2.Portal,
+	intent bridgev2.MatrixAPI,
+	msg libtiktok.Message,
+) (*bridgev2.ConvertedMessage, error) {
+	log := zerolog.Ctx(ctx)
+	pmeta := messageMetaFromLib(msg)
+
+	// No cover URL means there is nothing to show but the link itself.
+	if msg.MediaURL == "" {
+		return convertVideoFallback(msg), nil
+	}
+
+	data, mime, err := tc.apiClient.DownloadCover(ctx, msg.MediaURL)
+	if err != nil {
+		// Cover URLs are signed with an expiry, so a backfilled post from weeks
+		// ago can legitimately be past it. The caption still carries the link.
+		log.Debug().Err(err).Str("url", msg.MediaURL).
+			Msg("Failed to download TikTok photo cover; falling back to text")
+		return convertVideoFallback(msg), nil
+	}
+
+	size := int64(len(data))
+	content := &event.MessageEventContent{
+		MsgType: event.MsgImage,
+		Body:    "photo.jpg",
+		Info: &event.FileInfo{
+			MimeType: mime,
+			Size:     int(size),
+		},
+	}
+	if msg.MediaWidth > 0 {
+		content.Info.Width = msg.MediaWidth
+	}
+	if msg.MediaHeight > 0 {
+		content.Info.Height = msg.MediaHeight
+	}
+
+	mxcURL, encFile, err := intent.UploadMediaStream(
+		ctx,
+		portal.MXID,
+		size,
+		false,
+		func(dest io.Writer) (*bridgev2.FileStreamResult, error) {
+			if _, err := dest.Write(data); err != nil {
+				return nil, err
+			}
+			return &bridgev2.FileStreamResult{FileName: "photo.jpg", MimeType: mime}, nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("upload photo to Matrix: %w", err)
+	}
+	content.URL = mxcURL
+	content.File = encFile
+
+	applyTikTokVideoCaption(content, msg)
+
+	return &bridgev2.ConvertedMessage{
+		Parts: []*bridgev2.ConvertedMessagePart{
+			{Type: event.EventMessage, Content: content, DBMetadata: pmeta},
 		},
 	}, nil
 }

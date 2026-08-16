@@ -10,7 +10,7 @@ api_base_url: ""
 
 # Optional: a custom User-Agent string to send with TikTok API requests.
 # Leave empty to use the default built into the TikTok PoC client.
-user_agent: ""
+user_agent: ""
 # Default proxy (http/https/socks5) for TikTok traffic. A per-login
 # proxy_url in the login metadata overrides this. Empty means no proxy.
 proxy: ""
