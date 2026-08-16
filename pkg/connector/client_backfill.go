@@ -361,6 +361,14 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 
 	for i := range convs {
 		conv := &convs[i]
+		// Pace between conversations as well as between pages. The page
+		// loop below only pauses from its second page on, so the first
+		// request of each conversation had no gap before it - and on a warm
+		// reconnect most conversations stop after one page, which made the
+		// whole pass one request per conversation, back to back.
+		if i > 0 {
+			backfillPause(ctx)
+		}
 		log.Debug().
 			Str("conversation_id", conv.ID).
 			Strs("participants", conv.Participants).
@@ -434,7 +442,7 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 					// The server said slow down. Do exactly that, then stop this
 					// conversation - the rest of the backfill will pick up from
 					// the checkpoint next time round.
-					wait := max(rl.RetryAfter, 30*time.Second)
+					wait := libtiktok.ThrottleBackoff(rl)
 					log.Warn().Dur("retry_after", wait).
 						Str("conversation_id", conv.ID).
 						Msg("TikTok rate limited backfill; pausing")

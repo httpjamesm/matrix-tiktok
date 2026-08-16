@@ -15,9 +15,19 @@ func TestConnectorInitialBackfillDefaultsAndClamp(t *testing.T) {
 	if got := tc.initialBackfillMaxPages(false); got != defaultInitialBackfillMaxPages {
 		t.Fatalf("initialBackfillMaxPages(false) = %d, want %d", got, defaultInitialBackfillMaxPages)
 	}
-	if got := tc.initialBackfillMaxPages(true); got != hardMaxBackfillPagesPerConversation {
-		t.Fatalf("initialBackfillMaxPages(true) = %d, want %d", got, hardMaxBackfillPagesPerConversation)
+	// A cold start uses its own default rather than falling through to the
+	// safety clamp. The clamp exists to bound a value someone configured; using
+	// it as the unconfigured default meant a first connect walked up to 10000
+	// pages per conversation back to back.
+	if got := tc.initialBackfillMaxPages(true); got != defaultColdStartBackfillMaxPages {
+		t.Fatalf("initialBackfillMaxPages(true) = %d, want %d", got, defaultColdStartBackfillMaxPages)
 	}
+	// The clamp still applies to a configured value that is too large.
+	tc.Config.InitialBackfillMaxPages = hardMaxBackfillPagesPerConversation * 10
+	if got := tc.initialBackfillMaxPages(true); got != hardMaxBackfillPagesPerConversation {
+		t.Fatalf("an over-large configured value was not clamped: got %d, want %d", got, hardMaxBackfillPagesPerConversation)
+	}
+	tc.Config.InitialBackfillMaxPages = 0
 	if got := tc.initialBackfillMaxConversations(); got != 0 {
 		t.Fatalf("initialBackfillMaxConversations() = %d, want 0", got)
 	}

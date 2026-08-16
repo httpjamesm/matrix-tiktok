@@ -822,7 +822,7 @@ func buildRecallPayload(convID string, sourceID, serverMsgID uint64, deviceID, m
 //  4. Construct the type-705 protobuf request body.
 //  5. POST to /v1/message/set_property with ztca-dpop in the query string.
 func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 
 	universalData, err := c.getMessagesUniversalData()
 	if err != nil {
@@ -894,7 +894,7 @@ func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
 
 // SendTyping posts a typing heartbeat to TikTok for the specified conversation.
 func (c *Client) SendTyping(ctx context.Context, p SendTypingParams) error {
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 
 	universalData, err := c.getMessagesUniversalData()
 	if err != nil {
@@ -947,7 +947,7 @@ func (c *Client) SendTyping(ctx context.Context, p SendTypingParams) error {
 
 // MarkConversationRead marks a conversation as read on TikTok (POST /v3/conversation/mark_read).
 func (c *Client) MarkConversationRead(ctx context.Context, p MarkConversationReadParams) error {
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 
 	universalData, err := c.getMessagesUniversalData()
 	if err != nil {
@@ -1012,7 +1012,11 @@ func (c *Client) MarkConversationRead(ctx context.Context, p MarkConversationRea
 //     ticket-guard headers set.
 //  6. Parse the response for the server-assigned message ID (required).
 func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMessageResponse, error) {
-	cookie := c.rIA.Header.Get("Cookie")
+	// Space consecutive messages on this account. Sending as fast as the API
+	// accepts them is the pattern platforms ban for.
+	c.PaceOutgoing(ctx)
+
+	cookie := c.sessionCookie()
 	if p.Image != nil && p.Video != nil {
 		return nil, fmt.Errorf("image and video cannot be sent in the same message")
 	}
@@ -1120,7 +1124,7 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 // Like delete-for-self, the web client posts to this endpoint with no URL query
 // parameters; authentication relies on the session cookies on the client.
 func (c *Client) RecallMessage(ctx context.Context, p DeleteMessageParams) error {
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 
 	universalData, err := c.getMessagesUniversalData()
 	if err != nil {
@@ -1168,7 +1172,7 @@ func (c *Client) RecallMessage(ctx context.Context, p DeleteMessageParams) error
 // URL query parameters (no ztca-dpop / X-Bogus); authentication relies on the
 // session cookies already configured on the client.
 func (c *Client) DeleteMessage(ctx context.Context, p DeleteMessageParams) error {
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 
 	universalData, err := c.getMessagesUniversalData()
 	if err != nil {

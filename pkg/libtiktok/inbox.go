@@ -175,14 +175,50 @@ func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (m
 	case 800:
 		msgType = "video"
 		if itemID, ok := content["itemId"].(string); ok && itemID != "" {
-			if uid, ok := content["uid"].(string); ok && uid != "" {
-				if user, err := c.GetUser(ctx, uid); err == nil && user.UniqueID != "" {
-					mediaURL = "https://www.tiktok.com/@" + user.UniqueID + "/video/" + itemID
-				}
+			if handle := c.handleFor(ctx, content); handle != "" {
+				mediaURL = "https://www.tiktok.com/@" + handle + "/video/" + itemID
 			}
 		}
 		if value, ok := content["content_title"].(string); ok {
 			text = value
+		}
+	case 502:
+		// A GIF from the Tenor picker. parseStickerFromContentJSON only knows
+		// TikTok's own sticker shape, so these fell through to the unsupported
+		// notice even though the payload hands us a plain public URL.
+		if list := stringListFromContent(content, "url"); len(list) > 0 {
+			msgType = "sticker"
+			mediaURL = list[0]
+			mimeType = guessStickerMIMEFromURL(mediaURL)
+			if value, ok := content["display_name"].(string); ok && value != "" {
+				text = "[" + value + "]"
+			} else {
+				text = "[GIF]"
+			}
+		}
+	case 810:
+		// A shared photo post (photomode — the swipeable stills with a sound).
+		// It carries the same itemId/uid shape as a video but lives under
+		// /photo/, and crucially it ships its own pre-signed cover URL, so the
+		// picture can be fetched directly instead of scraped off the web page.
+		msgType = "photo"
+		if list := stringListFromContent(content, "cover_url"); len(list) > 0 {
+			mediaURL = list[0]
+			mimeType = guessStickerMIMEFromURL(mediaURL)
+		}
+		if itemID, ok := content["itemId"].(string); ok && itemID != "" {
+			if handle := c.handleFor(ctx, content); handle != "" {
+				text = "https://www.tiktok.com/@" + handle + "/photo/" + itemID
+			}
+		}
+		// content_name is the sound, which is the only caption TikTok sends for
+		// these. Better than an empty bubble under the picture.
+		if value, ok := content["content_name"].(string); ok && value != "" {
+			if text != "" {
+				text = value + "\n" + text
+			} else {
+				text = value
+			}
 		}
 	default:
 		msgType = fmt.Sprintf("type_%d", int(aweTypeF))
@@ -195,6 +231,49 @@ func parseMessageContent(ctx context.Context, c *Client, contentBytes []byte) (m
 			Msg("Received TikTok message with unrecognised aweType — please open an issue")
 	}
 	return
+}
+
+// handleFor resolves the poster's @handle from a shared-post payload's uid, so
+// a canonical tiktok.com/@handle/... link can be built.
+//
+// The nil-client guard matters: parseMessageContent is reachable with no client
+// (that is how its own tests drive it), and calling straight through to GetUser
+// dereferenced nil and panicked the whole sync loop rather than just skipping
+// the link.
+func (c *Client) handleFor(ctx context.Context, content map[string]any) string {
+	if c == nil {
+		return ""
+	}
+	uid, ok := content["uid"].(string)
+	if !ok || uid == "" {
+		return ""
+	}
+	user, err := c.GetUser(ctx, uid)
+	if err != nil || user == nil {
+		return ""
+	}
+	return user.UniqueID
+}
+
+// stringListFromContent pulls a TikTok image object's url_list out of a decoded
+// content blob. TikTok wraps every image the same way — {"uri":…,"url_list":[…]}
+// — with the entries being the same asset on different CDN hosts, best first.
+func stringListFromContent(content map[string]any, key string) []string {
+	object, ok := content[key].(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := object["url_list"].([]any)
+	if !ok {
+		return nil
+	}
+	urls := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		if value, ok := entry.(string); ok && value != "" {
+			urls = append(urls, value)
+		}
+	}
+	return urls
 }
 
 // parseReplyQuotedTextFromWire extracts the inner chat "text" from TikTok's message_reply
@@ -458,7 +537,7 @@ func (c *Client) fetchInbox(ctx context.Context, deviceID, msToken, verifyFP str
 func (c *Client) GetInbox(ctx context.Context) ([]Conversation, error) {
 	// Extract cookie values we need for the request.
 	// rIA already has the full cookie header set at construction time.
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 	universalData, err := c.getMessagesUniversalData()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get universal data: %w", err)
@@ -676,7 +755,7 @@ func parseGetByConversationResponse(ctx context.Context, c *Client, body []byte)
 func (c *Client) GetMessages(ctx context.Context, conv *Conversation, cursor string) ([]Message, string, error) {
 	log := zerolog.Ctx(ctx).With().Str("component", "libtiktok-messages").Logger()
 	ctx = log.WithContext(ctx)
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 
 	universalData, err := c.getMessagesUniversalData()
 	if err != nil {

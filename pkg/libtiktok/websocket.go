@@ -113,7 +113,7 @@ func (c *Client) deriveWSURL() (string, error) {
 	sum := md5.Sum([]byte(raw))
 	accessKey := hex.EncodeToString(sum[:])
 
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 	rawTTWid := extractCookie(cookie, "ttwid")
 	if rawTTWid == "" {
 		return "", fmt.Errorf("ttwid not found in cookie string")
@@ -841,7 +841,7 @@ func (c *Client) ConnectWebSocket(ctx context.Context) (<-chan WSEvent, error) {
 		log.Debug().Msg("Dialling TikTok IM WebSocket")
 	}
 
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			"Cookie":     {cookie},
