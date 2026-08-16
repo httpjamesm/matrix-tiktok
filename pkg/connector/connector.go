@@ -77,6 +77,9 @@ type Config struct {
 	APIBaseURL string `yaml:"api_base_url"`
 	// Optional override for the TikTok HTTP User-Agent.
 	UserAgent string `yaml:"user_agent"`
+	// Optional default proxy (http/https/socks5) for every login's TikTok
+	// traffic. A per-login proxy_url in the login metadata overrides it.
+	Proxy string `yaml:"proxy"`
 	// Maximum REST history pages to fetch per conversation on connect.
 	// Zero uses a built-in default: full history (until the safety cap) for
 	// portals without a checkpoint, otherwise a small catch-up page count.
@@ -136,6 +139,11 @@ type UserLoginMetadata struct {
 	// TikTok in-app or browser session (e.g. "sessionid=abc123; tt_csrf_token=xyz; …").
 	// The bridge sends this verbatim on every API request to impersonate the browser.
 	Cookies string `json:"cookies"`
+
+	// ProxyURL, when set, routes this login's TikTok traffic through the given
+	// proxy, overriding the connector-wide Proxy config. Lets each account
+	// egress from its own IP.
+	ProxyURL string `json:"proxy_url,omitempty"`
 }
 
 // PortalMetadata stores TikTok-specific data alongside each bridged room.

@@ -71,7 +71,7 @@ func (tl *TikTokLogin) SubmitUserInput(ctx context.Context, input map[string]str
 // finishLogin validates the session against the TikTok API, then persists the
 // UserLogin and returns the completion step.
 func (tl *TikTokLogin) finishLogin(ctx context.Context) (*bridgev2.LoginStep, error) {
-	apiClient := libtiktok.NewClient(tl.cookies)
+	apiClient := libtiktok.NewClient(tl.cookies, tl.Connector.Config.Proxy)
 
 	self, err := apiClient.GetSelfWithRetry(ctx, 2)
 	if err != nil {

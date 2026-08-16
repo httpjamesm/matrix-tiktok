@@ -169,7 +169,11 @@ func extractUniversalData(body string) (string, error) {
 	return content, nil
 }
 
-func NewClient(cookieString string) *Client {
+// NewClient builds a TikTok client. proxyURL, when non-empty, routes every
+// request through that proxy (http, https or socks5). Running many accounts
+// through one bridge, they otherwise all egress from the bridge host's single
+// IP; a per-login proxy lets each account leave from an address of its own.
+func NewClient(cookieString, proxyURL string) *Client {
 	r := resty.New()
 	r.SetHeader("Cookie", cookieString)
 	r.SetHeader("User-Agent", DefaultUserAgent)
@@ -182,6 +186,11 @@ func NewClient(cookieString string) *Client {
 	rIA.SetHeader("Accept-Language", "en-US,en;q=0.9")
 	rIA.SetHeader("Referer", "https://www.tiktok.com/")
 	rIA.SetBaseURL("https://im-api-sg.tiktok.com")
+
+	if proxyURL != "" {
+		r.SetProxy(proxyURL)
+		rIA.SetProxy(proxyURL)
+	}
 	return &Client{
 		r:   r,
 		rIA: rIA,

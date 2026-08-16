@@ -70,7 +70,7 @@ func newTikTokClient(connector *TikTokConnector, userLogin *bridgev2.UserLogin, 
 		connector:      connector,
 		userLogin:      userLogin,
 		meta:           meta,
-		apiClient:      libtiktok.NewClient(meta.Cookies),
+		apiClient:      libtiktok.NewClient(meta.Cookies, resolveProxy(connector, meta)),
 		lastSeen:       make(map[string]int64),
 		otherUsers:     make(map[string]string),
 		groupNames:     make(map[string]string),
@@ -135,3 +135,12 @@ var _ bridgev2.TypingHandlingNetworkAPI = (*TikTokClient)(nil)
 var _ bridgev2.ReadReceiptHandlingNetworkAPI = (*TikTokClient)(nil)
 
 func ptrInt(v int) *int { return &v }
+
+// resolveProxy picks the per-login proxy if set, otherwise the connector-wide
+// default. Empty means no proxy.
+func resolveProxy(connector *TikTokConnector, meta *UserLoginMetadata) string {
+	if meta != nil && meta.ProxyURL != "" {
+		return meta.ProxyURL
+	}
+	return connector.Config.Proxy
+}
