@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -31,7 +32,7 @@ func (tc *TikTokClient) connectOnce(ctx context.Context) {
 		return
 	}
 
-	if _, err := tc.apiClient.GetSelfWithRetry(ctx, 5); err != nil {
+	if _, err := tc.apiClient.GetSelfWithRetry(ctx, 2); err != nil {
 		tc.sendGetSelfBridgeState(err)
 		return
 	}
@@ -120,11 +121,14 @@ func (tc *TikTokClient) wsLoop(ctx context.Context) {
 	for {
 		ch, err := tc.apiClient.ConnectWebSocket(ctx)
 		if err != nil {
-			log.Err(err).Dur("retry_in", backoff).Msg("WebSocket dial failed, will retry")
+			// Jitter the wait so that many logins failing at once do not reconnect
+			// on the same staircase for the rest of their lives.
+			wait := backoff + time.Duration((rand.Float64()*0.4-0.2)*float64(backoff))
+			log.Err(err).Dur("retry_in", wait).Msg("WebSocket dial failed, will retry")
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
+			case <-time.After(wait):
 				backoff *= 2
 				if backoff > maxBackoff {
 					backoff = maxBackoff

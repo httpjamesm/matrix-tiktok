@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 	"golang.org/x/net/html"
@@ -16,7 +18,22 @@ type Client struct {
 	r *resty.Client
 	// rIA is the client for the IM API specifically
 	rIA *resty.Client
+
+	// The parsed /messages page, kept for a while. Every action - sending,
+	// reacting, marking read, even the typing heartbeat fired every few seconds
+	// while someone composes - needs one stable value from it (the device id),
+	// and used to reload the entire webapp page to get it, with its own retry
+	// storm on top. A real client loads that page once per session.
+	universalDataMu sync.Mutex
+	universalData   MessagesUniversalData
+	universalDataAt time.Time
 }
+
+// universalDataTTL is how long the cached /messages page is trusted before it is
+// fetched again. The value callers actually read from it (wid) is a device
+// identity, not a per-request token, so a long TTL is safe; refreshing every
+// so often just keeps us honest if TikTok rotates it.
+const universalDataTTL = 30 * time.Minute
 
 type MessagesUniversalData map[string]any
 
@@ -36,28 +53,84 @@ func (m MessagesUniversalData) getAppContext() (map[string]any, error) {
 
 // GetMessages fetches /messages, extracts the #__UNIVERSAL_DATA_FOR_REHYDRATION__
 // script tag, and returns its contents as a parsed JSON map.
+// It retries when TikTok serves a page with no hydration script. That happens
+// often enough to matter — roughly one request in three — and this is the hot
+// path for the whole bridge: both GetInbox and GetMessages start here, so a
+// single miss meant an empty conversation list or a thread that failed to load,
+// not merely a degraded one.
 func (c *Client) getMessagesUniversalData() (MessagesUniversalData, error) {
-	resp, err := c.r.R().
-		SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
-		Get("/messages")
+	c.universalDataMu.Lock()
+	defer c.universalDataMu.Unlock()
+	if c.universalData != nil && time.Since(c.universalDataAt) < universalDataTTL {
+		return c.universalData, nil
+	}
+	data, err := c.fetchMessagesUniversalData()
 	if err != nil {
-		return nil, fmt.Errorf("get /messages: %w", err)
+		return nil, err
 	}
-	if resp.IsError() {
-		return nil, fmt.Errorf("get /messages: unexpected status %d", resp.StatusCode())
-	}
+	c.universalData = data
+	c.universalDataAt = time.Now()
+	return data, nil
+}
 
-	rawJSON, err := extractUniversalData(resp.String())
-	if err != nil {
-		return nil, fmt.Errorf("extract universal data: %w", err)
-	}
+// invalidateUniversalData drops the cached page so the next caller refetches.
+// For when a request that depended on it comes back rejected.
+func (c *Client) invalidateUniversalData() {
+	c.universalDataMu.Lock()
+	c.universalData = nil
+	c.universalDataMu.Unlock()
+}
 
-	var result map[string]any
-	if err := json.Unmarshal([]byte(rawJSON), &result); err != nil {
-		return nil, fmt.Errorf("parse universal data JSON: %w", err)
-	}
+// fetchMessagesUniversalData is the uncached load. See getMessagesUniversalData.
+func (c *Client) fetchMessagesUniversalData() (MessagesUniversalData, error) {
+	var lastErr error
+	for attempt := 1; attempt <= messagesPageAttempts; attempt++ {
+		if attempt > 1 {
+			// Backs off hard rather than linearly: the shell is a throttle, and
+			// four rapid retries measurably provoked more of them than they
+			// cleared. 0.6s, 1.8s, 5.4s gives TikTok time to let go.
+			time.Sleep(600 * time.Millisecond * time.Duration(pow3(attempt-2)))
+		}
+		resp, err := c.r.R().
+			SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
+			Get("/messages")
+		if err != nil {
+			lastErr = fmt.Errorf("get /messages: %w", err)
+			continue
+		}
+		if resp.IsError() {
+			lastErr = fmt.Errorf("get /messages: unexpected status %d", resp.StatusCode())
+			continue
+		}
 
-	return result, nil
+		rawJSON, err := extractUniversalData(resp.String())
+		if err != nil {
+			lastErr = fmt.Errorf("extract universal data: %w", err)
+			continue
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal([]byte(rawJSON), &result); err != nil {
+			// Malformed JSON is not a throttle; retrying just repeats it.
+			return nil, fmt.Errorf("parse universal data JSON: %w", err)
+		}
+
+		return result, nil
+	}
+	return nil, lastErr
+}
+
+// messagesPageAttempts bounds the retry above. Four tries turns a 1-in-3 miss
+// rate into roughly 1 in 80.
+const messagesPageAttempts = 4
+
+// pow3 returns 3^n for small n, for the backoff schedule above.
+func pow3(n int) int {
+	result := 1
+	for i := 0; i < n; i++ {
+		result *= 3
+	}
+	return result
 }
 
 // extractUniversalData parses the HTML body and returns the raw JSON string

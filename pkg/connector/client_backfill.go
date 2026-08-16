@@ -2,7 +2,9 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -23,7 +25,29 @@ const (
 	// connect when the user leaves initial_backfill_max_pages at zero and a
 	// portal already has a stored checkpoint.
 	defaultInitialBackfillMaxPages = 5
+	// defaultColdStartBackfillMaxPages is the default on a first-ever connect,
+	// when there is no checkpoint. This used to fall through to the 10000-page
+	// safety clamp, so a fresh login walked every conversation's entire history
+	// back-to-back - a safety ceiling being used as a starting value. Fifty
+	// pages is a generous amount of recent history for an inbox to open with;
+	// anyone who wants more can say so in the config.
+	defaultColdStartBackfillMaxPages = 50
+	// backfillPageDelay is the pause between history pages, and between
+	// conversations. Nothing human scrolls an inbox at request-per-millisecond
+	// speed, and TikTok already treats the /messages shell as a throttle.
+	backfillPageDelay = 750 * time.Millisecond
 )
+
+// backfillPause sleeps for backfillPageDelay plus up to 50% jitter, unless the
+// context ends first. Jitter so that many logins backfilling at once do not
+// hit the API in lockstep.
+func backfillPause(ctx context.Context) {
+	d := backfillPageDelay + time.Duration(rand.Float64()*float64(backfillPageDelay)*0.5)
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+	}
+}
 
 type backfillCheckpoint struct {
 	TimestampMs int64
@@ -36,7 +60,7 @@ func (tc *TikTokConnector) initialBackfillMaxPages(coldStart bool) int {
 	switch {
 	case pages <= 0:
 		if coldStart {
-			return hardMaxBackfillPagesPerConversation
+			return defaultColdStartBackfillMaxPages
 		}
 		return defaultInitialBackfillMaxPages
 	case pages > hardMaxBackfillPagesPerConversation:
@@ -400,8 +424,26 @@ func (tc *TikTokClient) fetchAndDispatch(ctx context.Context) error {
 				truncated = true
 				break
 			}
+			if page > 0 {
+				backfillPause(ctx)
+			}
 			msgs, next, err := tc.apiClient.GetMessages(ctx, conv, cursor)
 			if err != nil {
+				var rl *libtiktok.ErrRateLimited
+				if errors.As(err, &rl) {
+					// The server said slow down. Do exactly that, then stop this
+					// conversation - the rest of the backfill will pick up from
+					// the checkpoint next time round.
+					wait := max(rl.RetryAfter, 30*time.Second)
+					log.Warn().Dur("retry_after", wait).
+						Str("conversation_id", conv.ID).
+						Msg("TikTok rate limited backfill; pausing")
+					select {
+					case <-time.After(wait):
+					case <-ctx.Done():
+					}
+					break
+				}
 				log.Err(err).
 					Str("conversation_id", conv.ID).
 					Int("backfill_page", page).
