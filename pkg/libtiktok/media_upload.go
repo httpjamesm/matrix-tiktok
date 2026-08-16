@@ -344,7 +344,7 @@ func buildMediaUploadConfigPayload(deviceID, msToken, verifyFP string) ([]byte, 
 }
 
 func (c *Client) fetchMediaUploadConfigEntries(ctx context.Context) ([]*tiktokpb.MediaUploadConfigEntry, error) {
-	cookie := c.rIA.Header.Get("Cookie")
+	cookie := c.sessionCookie()
 
 	universalData, err := c.getMessagesUniversalData()
 	if err != nil {

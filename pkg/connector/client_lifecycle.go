@@ -3,9 +3,9 @@ package connector
 import (
 	"context"
 	"math/rand/v2"
-	"strings"
 	"time"
 
+	"github.com/httpjamesm/matrix-tiktok/pkg/libtiktok"
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2/status"
 )
@@ -62,6 +62,41 @@ func (tc *TikTokClient) connectOnce(ctx context.Context) {
 	loopCtx, cancel := context.WithCancel(context.Background())
 	tc.stopLoop = cancel
 	go tc.wsLoop(loopCtx)
+	go tc.persistRotatedSession(loopCtx)
+}
+
+// sessionPersistInterval is how often a rotated cookie is written back. Every
+// rotation would mean a database write per request; TikTok issues a new msToken
+// constantly, and only the most recent one matters.
+const sessionPersistInterval = 5 * time.Minute
+
+// persistRotatedSession saves the cookie header back to the login record as
+// TikTok rotates values inside it.
+//
+// Without this the rotation only lives in memory: every restart reverts to the
+// values pasted at login, which get older each time until the session stops
+// being accepted and the user has to paste a fresh one by hand.
+func (tc *TikTokClient) persistRotatedSession(ctx context.Context) {
+	log := zerolog.Ctx(ctx).With().Str("component", "session-persist").Logger()
+	ticker := time.NewTicker(sessionPersistInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		current := tc.apiClient.SessionCookie()
+		if current == "" || current == tc.meta.Cookies {
+			continue
+		}
+		tc.meta.Cookies = current
+		if err := tc.userLogin.Save(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to persist rotated TikTok session cookie")
+			continue
+		}
+		log.Debug().Msg("Persisted rotated TikTok session cookie")
+	}
 }
 
 // sendGetSelfBridgeState maps GetSelf failures to bridge state. Many failures are
@@ -74,8 +109,7 @@ func (tc *TikTokClient) sendGetSelfBridgeState(err error) {
 		Info:  map[string]any{"go_error": msg},
 	}
 	switch {
-	case strings.Contains(msg, "unexpected status 401"),
-		strings.Contains(msg, "unexpected status 403"):
+	case libtiktok.IsAuthRejected(err):
 		st.StateEvent = status.StateBadCredentials
 		st.Message = "TikTok session is no longer valid — please log in again"
 	default:

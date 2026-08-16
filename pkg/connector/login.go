@@ -62,6 +62,11 @@ func (tl *TikTokLogin) SubmitUserInput(ctx context.Context, input map[string]str
 	if !ok || cookies == "" {
 		return nil, fmt.Errorf("cookies is required")
 	}
+	// Check the shape before spending a request on it, so a mis-paste says what
+	// is wrong instead of failing later as an opaque HTTP error.
+	if err := libtiktok.ValidateLoginCookies(cookies); err != nil {
+		return nil, err
+	}
 
 	tl.cookies = cookies
 
