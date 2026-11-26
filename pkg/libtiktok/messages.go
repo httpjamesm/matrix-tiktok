@@ -19,14 +19,11 @@ import (
 )
 
 const (
-	sendMsgPath    = "/v1/message/send"
-	sendMsgFullURL = "https://im-api-sg.tiktok.com/v1/message/send"
+	sendMsgPath = "/v1/message/send"
 
-	setPropertyPath    = "/v1/message/set_property"
-	setPropertyFullURL = "https://im-api-sg.tiktok.com/v1/message/set_property"
+	setPropertyPath = "/v1/message/set_property"
 
-	inputStatusPath    = "/v1/client/input_status"
-	inputStatusFullURL = "https://im-api-sg.tiktok.com/v1/client/input_status"
+	inputStatusPath = "/v1/client/input_status"
 
 	markReadPath = "/v3/conversation/mark_read"
 
@@ -818,7 +815,7 @@ func buildRecallPayload(convID string, sourceID, serverMsgID uint64, deviceID, m
 // Protocol summary:
 //  1. Fetch the device ID (wid) from /messages universal data.
 //  2. Generate a fresh P-256 keypair for tt-ticket-guard.
-//  3. Build a DPoP proof JWT (ES256) bound to POST setPropertyFullURL.
+//  3. Build a DPoP proof JWT (ES256) bound to POST imAPIURL(setPropertyPath).
 //  4. Construct the type-705 protobuf request body.
 //  5. POST to /v1/message/set_property with ztca-dpop in the query string.
 func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
@@ -846,7 +843,11 @@ func (c *Client) SendReaction(ctx context.Context, p SendReactionParams) error {
 	}
 	publicKeyB64 := base64.StdEncoding.EncodeToString(p256UncompressedPoint(priv))
 
-	dpopToken, err := buildDPoPJWT(priv, "POST", setPropertyFullURL)
+	htu, err := c.imAPIURL(setPropertyPath)
+	if err != nil {
+		return fmt.Errorf("resolve IM API URL: %w", err)
+	}
+	dpopToken, err := buildDPoPJWT(priv, "POST", htu)
 	if err != nil {
 		return fmt.Errorf("build DPoP JWT: %w", err)
 	}
@@ -1006,7 +1007,7 @@ func (c *Client) MarkConversationRead(ctx context.Context, p MarkConversationRea
 //  2. Generate a fresh P-256 keypair — the uncompressed public key is embedded
 //     both in the protobuf metadata (tt-ticket-guard-public-key) and the HTTP
 //     request header.
-//  3. Build a DPoP proof JWT (ES256) bound to POST sendMsgFullURL.
+//  3. Build a DPoP proof JWT (ES256) bound to POST imAPIURL(sendMsgPath).
 //  4. Construct the type-100 protobuf request body.
 //  5. POST to /v1/message/send with ztca-dpop in the query string and all
 //     ticket-guard headers set.
@@ -1047,7 +1048,11 @@ func (c *Client) SendMessage(ctx context.Context, p SendMessageParams) (*SendMes
 	publicKeyB64 := base64.StdEncoding.EncodeToString(p256UncompressedPoint(priv))
 
 	// Build a DPoP proof JWT bound to this specific POST request.
-	dpopToken, err := buildDPoPJWT(priv, "POST", sendMsgFullURL)
+	htu, err := c.imAPIURL(sendMsgPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve IM API URL: %w", err)
+	}
+	dpopToken, err := buildDPoPJWT(priv, "POST", htu)
 	if err != nil {
 		return nil, fmt.Errorf("build DPoP JWT: %w", err)
 	}
