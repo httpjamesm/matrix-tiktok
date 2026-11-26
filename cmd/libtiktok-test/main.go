@@ -688,7 +688,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	client := libtiktok.NewClient(cfg.Auth.Cookie)
+	client := libtiktok.NewClient(cfg.Auth.Cookie, "")
 	reader := bufio.NewReader(os.Stdin)
 
 	clearScreen()

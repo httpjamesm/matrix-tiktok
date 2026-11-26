@@ -15,8 +15,8 @@ func TestConnectorInitialBackfillDefaultsAndClamp(t *testing.T) {
 	if got := tc.initialBackfillMaxPages(false); got != defaultInitialBackfillMaxPages {
 		t.Fatalf("initialBackfillMaxPages(false) = %d, want %d", got, defaultInitialBackfillMaxPages)
 	}
-	if got := tc.initialBackfillMaxPages(true); got != hardMaxBackfillPagesPerConversation {
-		t.Fatalf("initialBackfillMaxPages(true) = %d, want %d", got, hardMaxBackfillPagesPerConversation)
+	if got := tc.initialBackfillMaxPages(true); got != defaultColdStartBackfillMaxPages {
+		t.Fatalf("initialBackfillMaxPages(true) = %d, want %d", got, defaultColdStartBackfillMaxPages)
 	}
 	if got := tc.initialBackfillMaxConversations(); got != 0 {
 		t.Fatalf("initialBackfillMaxConversations() = %d, want 0", got)
